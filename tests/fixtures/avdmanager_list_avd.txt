@@ -1,0 +1,7 @@
+Available Android Virtual Devices:
+    Name: Pixel_36_Ultra
+  Device: pixel (Google)
+    Path: /home/elliot/.android/avd/Pixel_36_Ultra.avd
+  Target: Google Play (Google Inc.)
+          Based on: Android 16.0 ("Baklava") Tag/ABI: google_apis_playstore/x86_64
+  Sdcard: 512 MB

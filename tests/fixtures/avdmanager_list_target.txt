@@ -1,0 +1,25 @@
+Loading local repository...                                                     [=========                              ] 25% Loading local repository...       Available Android targets:
+----------
+id: 1 or "android-34"
+     Name: Android API 34, extension level 7
+     Type: Platform
+     API level: 34
+     Revision: 3
+----------
+id: 2 or "android-35"
+     Name: Android API 35, extension level 13
+     Type: Platform
+     API level: 35
+     Revision: 2
+----------
+id: 3 or "android-36"
+     Name: Android API 36.0, extension level 17
+     Type: Platform
+     API level: 36.0
+     Revision: 2
+----------
+id: 4 or "android-37.0"
+     Name: Android API 37.0, extension level 22
+     Type: Platform
+     API level: 37.0
+     Revision: 2

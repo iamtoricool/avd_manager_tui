@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avdmanager-tui"
+version = "0.1.0"
+description = "Terminal UI for managing the Android SDK, AVDs and emulators"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "elliot" }]
+keywords = ["android", "avd", "sdk", "emulator", "tui", "terminal"]
+dependencies = [
+    "textual>=0.80",
+    "tomli-w>=1.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+avdmanager = "avdmanager.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avdmanager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
