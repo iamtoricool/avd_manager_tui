@@ -267,7 +267,9 @@ def _collect_issues(resolved: ResolvedPaths) -> list[str]:
 
     emulator = resolved.tool("emulator")
     if not emulator.ok:
-        issues.append("Emulator not found — install the `emulator` package from the SDK Tools tree.")
+        issues.append(
+            "Emulator not found - install the `emulator` package from the SDK Tools tree."
+        )
     return issues
 
 
