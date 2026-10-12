@@ -60,6 +60,9 @@ class AvdManagerApp(App):
         Binding("F4", "toggle_log", "Toggle log", show=False),
         Binding("j", "focus_next_tree", "Next tree", show=False),
         Binding("k", "focus_prev_tree", "Previous tree", show=False),
+        Binding("space", "toggle_mark", "Mark package", show=False, priority=True),
+        Binding("x", "stop_emulator", "Stop emulator", show=False),
+        Binding("escape", "clear_marks", "Clear marks", show=False),
     ]
 
     def __init__(self, context: AppContext | None = None) -> None:
@@ -216,6 +219,7 @@ class AvdManagerApp(App):
         if not self.ready:
             return
         await self.ctx.emulator.refresh_devices()
+        self.sidebar.set_running(self.ctx.emulator.running_avds())
 
     # ------------------------------------------------------------------ #
     # Actions
@@ -411,55 +415,92 @@ class AvdManagerApp(App):
 
     # -- package actions -------------------------------------------------- #
 
-    async def action_install(self) -> None:
-        pkg = self.sidebar.selected_package()
+    def action_toggle_mark(self) -> None:
+        """Mark/unmark a package for a batch install or uninstall."""
+        pkg = self.sidebar.toggle_mark()
         if pkg is None:
-            self.notify("Select a package to install.")
             return
-        if pkg.installed:
-            self.notify(f"{pkg.path} is already installed.")
+        marked_paths = {p.path for p in self.sidebar.marked_packages()}
+        state = "marked" if pkg.path in marked_paths else "unmarked"
+        self.notify(f"{pkg.path} {state} ({self.sidebar.mark_count()} marked)")
+
+    def action_clear_marks(self) -> None:
+        self.sidebar.clear_marks()
+        self.notify("Marks cleared.")
+
+    def _batch_targets(self, *, require_installed: bool) -> list[Package]:
+        """Marked packages if any are marked, otherwise the highlighted one."""
+        marked = self.sidebar.marked_packages()
+        if marked:
+            return marked if require_installed else [p for p in marked if not p.installed]
+        selected = self.sidebar.selected_package()
+        if selected is None:
+            return []
+        if require_installed and not selected.installed:
+            return []
+        if not require_installed and selected.installed:
+            return []
+        return [selected]
+
+    async def action_install(self) -> None:
+        targets = self._batch_targets(require_installed=False)
+        if not targets:
+            self.notify("Select an available package, or press space to mark several.")
             return
-        detail = [
-            f"Package: {pkg.path}",
-            f"Version: {pkg.version}",
-            "",
-            "Size is determined during download.",
-        ]
+        detail = [f"  {p.path}  ({p.version})" for p in targets]
+        if len(targets) > 1:
+            detail.append("")
+            detail.append(f"{len(targets)} packages will be downloaded.")
         await self.push_screen(
             ConfirmModal(
-                f"Install {pkg.description or pkg.path}?",
-                "The package will be downloaded into your SDK.",
+                f"Install {len(targets)} package(s)?",
+                "They will be downloaded into your SDK.",
                 detail=detail,
                 confirm_label="Install",
                 danger=False,
             ),
-            lambda ok: self._install([pkg.path]) if ok else None,
+            lambda ok: self._install([p.path for p in targets]) if ok else None,
         )
 
     async def action_uninstall(self) -> None:
-        pkg = self.sidebar.selected_package()
-        if pkg is None:
-            self.notify("Select an installed package to uninstall.")
+        targets = self._batch_targets(require_installed=True)
+        if not targets:
+            self.notify("Select an installed package, or press space to mark several.")
             return
-        if not pkg.installed:
-            self.notify(f"{pkg.path} is not installed.")
-            return
-        detail = [
-            f"Package: {pkg.path}",
-            f"Version: {pkg.version}",
-            f"Category: {pkg.category}",
-            "",
-            "Any AVDs built on this image will stop working.",
-        ]
+        detail = [f"  {p.path}  ({p.version})" for p in targets]
+        detail.append("")
+        detail.append("Any AVDs built on a removed image will stop working.")
         await self.push_screen(
             ConfirmModal(
-                f"Uninstall {pkg.description or pkg.path}?",
-                "This removes the package from your SDK.",
+                f"Uninstall {len(targets)} package(s)?",
+                "This removes them from your SDK.",
                 detail=detail,
                 confirm_label="Uninstall",
             ),
-            lambda ok: self._remove([pkg.path]) if ok else None,
+            lambda ok: self._remove([p.path for p in targets]) if ok else None,
         )
+
+    # -- emulators ------------------------------------------------------- #
+
+    @work(exclusive=False, group="emu")
+    async def action_stop_emulator(self) -> None:
+        if not self.ready:
+            return
+        avd = self.sidebar.selected_avd()
+        if avd is None:
+            self.notify("Select an AVD first.")
+            return
+        if not await self.ctx.emulator.stop_job(avd.name):
+            result = await self.ctx.emulator.stop(avd.name)
+            self.notify(
+                f"Stopped {avd.name}"
+                if result.ok
+                else f"Could not stop {avd.name}: {result.output.strip()}"
+            )
+        else:
+            self.notify(f"Stopped {avd.name}")
+        await self.ctx.emulator.refresh_devices()
+        self.sidebar.set_running(self.ctx.emulator.running_avds())
 
     @work(exclusive=False, group="sdk")
     async def _install(self, packages: list[str]) -> None:
@@ -468,6 +509,7 @@ class AvdManagerApp(App):
         )
         self._active_jobs[job.id] = job
         await self.ctx.runner.wait(job)
+        self.sidebar.clear_marks()
         self._load_packages(self._pending_filter)
 
     @work(exclusive=False, group="sdk")
@@ -477,6 +519,7 @@ class AvdManagerApp(App):
         )
         self._active_jobs[job.id] = job
         await self.ctx.runner.wait(job)
+        self.sidebar.clear_marks()
         self._load_packages(self._pending_filter)
 
     def action_accept_licenses(self) -> None:
@@ -584,8 +627,10 @@ def _default_runner():
 
 
 _HELP_TEXT = (
-    "AVD Manager keys — n new AVD · l launch · e rename · d delete · "
-    "R reveal folder · c edit config.ini · i install · u uninstall · "
-    "f filter · r refresh · L accept licences · U update all · "
-    "s settings · j/k switch tree · F4 toggle log · ctrl+c cancel job · q quit"
+    "AVDS: n new · l launch · x stop · e rename · d delete · R reveal · c config.ini\n"
+    "PACKAGES: space mark · i install marked · u uninstall marked · f filter · "
+    "esc clear marks\n"
+    "SDK: L accept licences · U update all · r refresh\n"
+    "VIEW: j/k switch tree · F4 toggle log · s settings · ? this help · q quit · "
+    "ctrl+c cancel job"
 )

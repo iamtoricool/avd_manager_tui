@@ -24,6 +24,8 @@ BATCH = 60
 INSTALLED_ICON = "[*]"
 AVAILABLE_ICON = "[ ]"
 UPDATE_ICON = "[!]"
+MARK_ICON = ">"
+RUNNING_ICON = "[>]"
 
 
 class Selected(Message):
@@ -46,6 +48,13 @@ class Sidebar(Vertical):
     Sidebar > .section-title { height: 1; padding: 0 1; color: $text-muted;
                                text-style: bold; background: $panel; }
     """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        #: Package paths marked for a batch operation.
+        self._marked: set[str] = set()
+        #: AVD names with a live emulator.
+        self._running_avds: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Static("AVDS", classes="section-title")
@@ -94,8 +103,10 @@ class Sidebar(Vertical):
             tree.root.add_leaf(_placeholder("No AVDs defined"))
             tree.root.expand()
             return
+        self._marked.clear()
+        self._running_avds.clear()
         for avd in avds:
-            tree.root.add_leaf(f"{INSTALLED_ICON} {avd.name}", data=("avd", avd))
+            tree.root.add_leaf(self._avd_label(avd), data=("avd", avd))
         if avds:
             tree.root.children[0].expand()
             tree.move_cursor(tree.root.children[0])
@@ -157,6 +168,77 @@ class Sidebar(Vertical):
         message = self.selected()
         return message.payload if message and message.kind == "avd" else None
 
+    # ------------------------------------------------------------------ #
+    # Marking (batch selection)
+    # ------------------------------------------------------------------ #
+
+    def toggle_mark(self) -> Package | None:
+        """Toggle the mark on the highlighted package; returns it."""
+        tree = self._focused_tree()
+        if tree is None or tree.cursor_node is None:
+            return None
+        node = tree.cursor_node
+        data = node.data
+        if not isinstance(data, tuple) or len(data) != 2 or data[0] != "pkg":
+            return None
+        pkg: Package = data[1]
+        if pkg.path in self._marked:
+            self._marked.discard(pkg.path)
+        else:
+            self._marked.add(pkg.path)
+        node.set_label(self._package_label(pkg, marked=pkg.path in self._marked))
+        return pkg
+
+    def marked_packages(self) -> list[Package]:
+        """Packages marked for a batch operation, in tree order."""
+        if not self._marked:
+            return []
+        found: list[Package] = []
+        for tree in (self.platforms_tree, self.tools_tree):
+            for node in _walk(tree):
+                data = node.data
+                if (
+                    isinstance(data, tuple)
+                    and len(data) == 2
+                    and data[0] == "pkg"
+                    and data[1].path in self._marked
+                ):
+                    found.append(data[1])
+        return found
+
+    def clear_marks(self) -> None:
+        self._marked.clear()
+        for tree in (self.platforms_tree, self.tools_tree):
+            for node in _walk(tree):
+                data = node.data
+                if isinstance(data, tuple) and len(data) == 2 and data[0] == "pkg":
+                    node.set_label(self._package_label(data[1], marked=False))
+
+    def mark_count(self) -> int:
+        return len(self._marked)
+
+    # ------------------------------------------------------------------ #
+    # Emulator state
+    # ------------------------------------------------------------------ #
+
+    def set_running(self, running: set[str]) -> None:
+        """Refresh AVD labels to show which emulators are running."""
+        if running == self._running_avds:
+            return
+        self._running_avds = set(running)
+        for node in _walk(self.avd_tree):
+            data = node.data
+            if isinstance(data, tuple) and len(data) == 2 and data[0] == "avd":
+                avd: Avd = data[1]
+                node.set_label(self._avd_label(avd, running=avd.name in self._running_avds))
+
+    def _package_label(self, pkg: Package, *, marked: bool = False) -> str:
+        """Instance form so marks can be toggled without rebuilding."""
+        return _package_label(pkg, marked=marked)
+
+    def _avd_label(self, avd: Avd, *, running: bool = False) -> str:
+        return _avd_label(avd, running=running)
+
     def _focused_tree(self) -> Tree | None:
         focused = self.app.focused if self.app else None
         if isinstance(focused, Tree) and focused in self.trees:
@@ -197,16 +279,33 @@ async def _populate(tree: Tree, packages: list[Package], empty_label: str) -> No
         await asyncio.sleep(0)
 
 
-def _package_label(pkg: Package) -> str:
+def _package_label(pkg: Package, *, marked: bool = False) -> str:
+    """Module-level fallback so tests can call it without a Sidebar instance."""
     icon = INSTALLED_ICON if pkg.installed else AVAILABLE_ICON
     if pkg.updates:
         icon = UPDATE_ICON
     css = "installed" if pkg.installed else ("updatable" if pkg.updates else "available")
     variant = f"  {pkg.variant}" if pkg.variant else ""
+    prefix = f"{MARK_ICON} " if marked else ""
     return (
-        f"[{css}]{icon}[/{css}] {pkg.description or pkg.name}"
+        f"{prefix}[{css}]{icon}[/{css}] {pkg.description or pkg.name}"
         f'[class="detail-value"]  {pkg.version}{variant}[/]'
     )
+
+
+def _avd_label(avd: Avd, *, running: bool = False) -> str:
+    icon = RUNNING_ICON if running else INSTALLED_ICON
+    css = "running" if running else "installed"
+    return f"[{css}]{icon}[/{css}] {avd.name}"
+
+
+def _walk(tree: Tree):
+    """Depth-first walk over every node of a tree."""
+    stack = list(tree.root.children)
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(reversed(node.children))
 
 
 def _group(packages: list[Package]) -> dict[str, list[Package]]:

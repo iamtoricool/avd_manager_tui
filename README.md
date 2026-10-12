@@ -33,8 +33,9 @@ release, newest first, with `installed/total` counts per group.
 **SDK tools** — build-tools, cmake, ndk, cmdline-tools, emulator, extras and
 everything else, grouped by category.
 
-**Install / uninstall** — streamed live output with progress, cancellable at
-any time, including the process group. Deletion always confirms with the exact
+**Install / uninstall** — press `space` to mark several packages, then `i` or `u`
+to act on all of them at once. Streamed live output, cancellable at any time
+including the process group. Deletion always confirms with the exact
 package path, version and a warning about AVDs built on a removed image.
 
 **Also** — accept SDK licences non-interactively, update all packages, filter

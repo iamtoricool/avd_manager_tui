@@ -313,12 +313,107 @@ async def test_uninstall_shows_confirm_with_package_path(app):
         await pilot.press("down")
         await pilot.pause()
     pkg = instance.sidebar.selected_package()
-    assert pkg is not None and pkg.installed
+    assert pkg is not None and pkg.installed, instance.sidebar.selected()
 
     await pilot.press("u")
     await pilot.pause()
     assert isinstance(instance.screen, ConfirmModal)
-    assert any("Package:" in line for line in instance.screen._detail)
+    detail = instance.screen._detail
+    assert any(pkg.path in line for line in detail)
+
+
+# --------------------------------------------------------------------------- #
+# Batch marking
+# --------------------------------------------------------------------------- #
+
+
+async def test_space_marks_a_package(app):
+    from avdmanager.ui.sidebar import MARK_ICON
+
+    instance, pilot = app
+    tree = instance.sidebar.tools_tree
+    tree.focus()
+    tree.root.children[0].expand()
+    for _ in range(4):
+        await pilot.pause(0.05)
+    for _ in range(2):
+        await pilot.press("down")
+        await pilot.pause()
+
+    await pilot.press("space")
+    await pilot.pause()
+    assert instance.sidebar.mark_count() == 1
+    marked = instance.sidebar.marked_packages()
+    assert len(marked) == 1
+    assert MARK_ICON in str(tree.cursor_node.label)
+
+    await pilot.press("space")
+    await pilot.pause()
+    assert instance.sidebar.mark_count() == 0
+    assert instance.sidebar.marked_packages() == []
+
+
+async def test_marking_multiple_packages(app):
+    instance, pilot = app
+    tree = instance.sidebar.tools_tree
+    tree.focus()
+    tree.root.children[0].expand()
+    tree.root.children[1].expand()
+    for _ in range(4):
+        await pilot.pause(0.05)
+
+    for _ in range(4):
+        await pilot.press("down")
+        await pilot.press("space")
+        await pilot.pause()
+
+    assert instance.sidebar.mark_count() >= 2
+    assert len(instance.sidebar.marked_packages()) == instance.sidebar.mark_count()
+
+
+async def test_escape_clears_marks(app):
+    instance, pilot = app
+    tree = instance.sidebar.tools_tree
+    tree.focus()
+    tree.root.children[0].expand()
+    for _ in range(4):
+        await pilot.pause(0.05)
+    await pilot.press("down")
+    await pilot.press("down")
+    await pilot.press("space")
+    await pilot.pause()
+    assert instance.sidebar.mark_count() == 1
+
+    instance.action_clear_marks()
+    await pilot.pause()
+    assert instance.sidebar.mark_count() == 0
+
+
+async def test_batch_targets_fall_back_to_selection(app):
+    instance, pilot = app
+    tree = instance.sidebar.tools_tree
+    tree.focus()
+    tree.root.children[0].expand()
+    for _ in range(4):
+        await pilot.pause(0.05)
+    for _ in range(2):
+        await pilot.press("down")
+        await pilot.pause()
+
+    # with nothing marked, the highlighted node is the target
+    assert len(instance._batch_targets(require_installed=True)) == 1
+
+
+async def test_running_indicator_updates_avd_labels(app):
+    from avdmanager.ui.sidebar import RUNNING_ICON
+
+    instance, _pilot = app
+    instance.sidebar.set_running({"Pixel_36_Ultra"})
+    node = instance.sidebar.avd_tree.root.children[0]
+    assert RUNNING_ICON in str(node.label)
+
+    instance.sidebar.set_running(set())
+    assert RUNNING_ICON not in str(node.label)
 
 
 async def test_settings_modal_opens_and_previews_resolution(app):
