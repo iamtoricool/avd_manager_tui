@@ -141,7 +141,7 @@ def stub_context(tmp_path):
 @pytest.fixture
 async def app(stub_context):
     instance = AvdManagerApp(stub_context)
-    async with instance.run_test() as pilot:
+    async with instance.run_test(size=(140, 45)) as pilot:
         await pilot.pause()
         # let the background loaders settle
         for _ in range(6):
@@ -625,7 +625,10 @@ async def test_log_height_is_clamped(app):
     from avdmanager.ui.app import LOG_MAX, LOG_MIN
 
     assert instance.set_log_height(0) == LOG_MIN
-    assert instance.set_log_height(9999) == LOG_MAX
+    # the absolute max is further capped by the terminal height
+    assert instance.set_log_height(9999) == instance.log_limit
+    assert instance.logpane.styles.height.value == instance.log_limit
+    assert instance.log_limit <= LOG_MAX
 
 
 async def test_layout_persists_to_the_config_file(app):
@@ -654,35 +657,212 @@ async def test_log_visibility_persists(app):
 
 
 async def test_dragging_the_vertical_splitter_widens_the_sidebar(app):
+    """Drive a real mouse drag rather than calling the handler directly."""
     from avdmanager.ui.splitter import Splitter
 
     instance, pilot = app
     splitter = instance.query_one("#sidebar-splitter", Splitter)
-    start = instance.ctx.config.sidebar_width
-
-    await pilot.mouse_down(splitter, offset=(0, 0), button=1)
-    for _ in range(5):
-        await pilot.hover(offset=(0, 0))
-        splitter._last -= 3  # simulate the pointer moving right
-        splitter._on_drag(3)
-    splitter.on_mouse_up(_FakeEvent())
+    instance.set_sidebar_width(42)
     await pilot.pause()
 
-    assert instance.ctx.config.sidebar_width > start
+    width = await _drag(pilot, splitter, dx=+8)
+
+    assert instance.ctx.config.sidebar_width == 42 + width
     assert splitter.dragging is False
 
 
-async def test_horizontal_drag_grows_the_log(app):
+async def test_dragging_the_vertical_splitter_narrows_the_sidebar(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    instance.set_sidebar_width(42)
+    await pilot.pause()
+
+    await _drag(pilot, splitter, dx=-6)
+
+    assert instance.ctx.config.sidebar_width == 36
+
+
+async def test_dragging_the_horizontal_splitter_resizes_the_log(app):
+    """The divider sits below the log, so dragging it down grows the log."""
     from avdmanager.ui.splitter import Splitter
 
     instance, pilot = app
     splitter = instance.query_one("#log-splitter", Splitter)
-    start = instance.ctx.config.log_height
+    # start small so there is room below the divider to drag into
+    instance.set_log_height(10)
+    await pilot.pause()
 
+    await _drag(pilot, splitter, dy=+5)
+    assert instance.ctx.config.log_height == 15
+
+    await _drag(pilot, splitter, dy=-5)
+    assert instance.ctx.config.log_height == 10
+
+
+async def test_drag_clamps_at_the_maximum(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    instance.set_sidebar_width(42)
+    await pilot.pause()
+
+    await _drag(pilot, splitter, dx=60)
+
+    assert instance.ctx.config.sidebar_width == instance.sidebar_limit
+
+
+async def test_drag_clamps_at_the_minimum(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    instance.set_sidebar_width(30)
+    await pilot.pause()
+
+    await _drag(pilot, splitter, dx=-40)
+
+    assert instance.ctx.config.sidebar_width == 24
+
+
+async def test_sidebar_is_capped_relative_to_the_terminal(stub_context):
+    """A 72-column sidebar must not starve the detail pane on a narrow terminal."""
+    from avdmanager.ui.app import MIN_DETAIL_WIDTH
+
+    instance = AvdManagerApp(stub_context)
+    async with instance.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+
+        width = instance.set_sidebar_width(999)
+        assert width == instance.sidebar_limit
+        assert width <= 80 - MIN_DETAIL_WIDTH
+        assert instance.query_one("#detail").size.width >= MIN_DETAIL_WIDTH
+        instance.exit()
+
+
+async def test_log_is_capped_relative_to_the_terminal(stub_context):
+    from avdmanager.ui.app import MIN_CHROME_ROWS
+
+    instance = AvdManagerApp(stub_context)
+    async with instance.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+
+        height = instance.set_log_height(999)
+        assert height == instance.log_limit
+        assert height <= 24 - MIN_CHROME_ROWS
+        # the detail pane must survive
+        assert instance.query_one("#detail").size.height > 0
+        instance.exit()
+
+
+async def test_panes_reclamp_when_the_terminal_shrinks(stub_context):
+    instance = AvdManagerApp(stub_context)
+    async with instance.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        instance.set_sidebar_width(72)
+        assert instance.ctx.config.sidebar_width == 72
+        instance.exit()
+
+    second = AvdManagerApp(stub_context)
+    async with second.run_test(size=(70, 20)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        # the stored 72 no longer fits and must be pulled in
+        assert second.ctx.config.sidebar_width <= second.sidebar_limit
+        assert second.query_one("#detail").size.width > 0
+        second.exit()
+
+
+async def test_sidebar_limit_property(stub_context):
+    instance = AvdManagerApp(stub_context)
+    async with instance.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        assert instance.sidebar_limit == 72  # 120 - 30 > 72, so the cap wins
+        second = AvdManagerApp(stub_context)
+        async with second.run_test(size=(80, 40)) as pilot2:
+            await pilot2.pause()
+            for _ in range(4):
+                await pilot2.pause(0.05)
+            assert second.sidebar_limit == 50  # 80 - 30
+        instance.exit()
+
+
+async def test_log_limit_property(stub_context):
+    instance = AvdManagerApp(stub_context)
+    async with instance.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        assert instance.log_limit == 28  # 40 - 12
+        instance.exit()
+
+
+async def test_splitter_drag_persists_on_release(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    instance.set_sidebar_width(42)
+    await pilot.pause()
+
+    await _drag(pilot, splitter, dx=+6)
+
+    from avdmanager.config import load_config
+
+    assert load_config(instance.ctx.config_path).sidebar_width == 48
+
+
+async def _drag(pilot, splitter, dx: int = 0, dy: int = 0):
+    """Press on a splitter, move the pointer, release. Returns the movement."""
+    instance = pilot.app
+    width, height = instance.size.width, instance.size.height
+    x0, y0 = splitter.region.x, splitter.region.y
+    if splitter.orientation == "vertical":
+        start = (x0, y0 + 1)
+        target_x = max(0, min(x0 + dx, width - 1))
+        target_y = y0 + 1
+    else:
+        start = (x0 + 5, y0)
+        target_x = x0 + 5
+        target_y = max(0, min(y0 + dy, height - 1))
+
+    grab = (0, 1) if splitter.orientation == "vertical" else (5, 0)
+    await pilot.mouse_down(splitter, offset=grab)
+    await pilot.pause()
+    steps = max(1, abs(target_x - start[0]), abs(target_y - start[1]))
+    for i in range(1, steps + 1):
+        await pilot.hover(
+            None,
+            offset=(
+                start[0] + round((target_x - start[0]) * i / steps),
+                start[1] + round((target_y - start[1]) * i / steps),
+            ),
+        )
+        await pilot.pause(0.005)
+    await pilot.mouse_up(None, offset=(target_x, target_y))
+    await pilot.pause()
+    return abs(target_x - start[0]) if splitter.orientation == "vertical" else abs(
+        target_y - start[1]
+    )
+
+
+async def test_horizontal_drag_grows_the_log(app):
+    instance, pilot = app
+    start = instance.ctx.config.log_height
     instance._on_log_drag(4)
     await pilot.pause()
     assert instance.ctx.config.log_height == start + 4
-    assert splitter is not None
 
 
 async def test_horizontal_drag_is_ignored_while_the_log_is_hidden(app):
@@ -733,8 +913,9 @@ async def test_resized_layout_is_restored_on_startup(stub_context):
     """A second app instance picks up the persisted geometry."""
     from avdmanager.ui.app import AvdManagerApp
 
+    # both instances use the same terminal size so the geometry round-trips
     first = AvdManagerApp(stub_context)
-    async with first.run_test() as pilot:
+    async with first.run_test(size=(140, 45)) as pilot:
         await pilot.pause()
         for _ in range(4):
             await pilot.pause(0.05)
@@ -745,7 +926,7 @@ async def test_resized_layout_is_restored_on_startup(stub_context):
         first.exit()
 
     second = AvdManagerApp(stub_context)
-    async with second.run_test() as pilot:
+    async with second.run_test(size=(140, 45)) as pilot:
         await pilot.pause()
         for _ in range(4):
             await pilot.pause(0.05)

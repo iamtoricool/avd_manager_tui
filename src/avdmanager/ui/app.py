@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -36,9 +36,14 @@ from avdmanager.ui.statusbar import StatusBar
 #: Debounce for the package filter, in seconds.
 FILTER_DEBOUNCE = 0.35
 
-#: Pane resize bounds, in cells.
+#: Pane resize bounds, in cells. The maxima are also capped relative to the
+#: terminal size so a pane can never squeeze the other one out of existence.
 SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_STEP = 24, 72, 2
 LOG_MIN, LOG_MAX, LOG_STEP = 3, 40, 2
+
+#: Space that must remain for the neighbouring pane plus app chrome.
+MIN_DETAIL_WIDTH = 30
+MIN_CHROME_ROWS = 12
 
 #: Used when a persisted pane size is missing or nonsensical.
 DEFAULT_SIDEBAR_WIDTH, DEFAULT_LOG_HEIGHT = 42, 14
@@ -116,13 +121,16 @@ class AvdManagerApp(App):
                 id="sidebar-splitter",
             )
             yield DetailPane(id="detail")
-        yield LogPane(id="logpane")
+        # The log's divider sits *above* the pane it resizes. Anchoring it
+        # below would leave it only the status-bar and footer rows to travel
+        # into, so the log could be shrunk by dragging but never grown.
         yield Splitter(
             "horizontal",
             on_drag=self._on_log_drag,
             on_commit=self._persist_layout,
             id="log-splitter",
         )
+        yield LogPane(id="logpane")
         yield StatusBar(self.ctx.runner, id="statusbar")
         yield Input(placeholder="Filter packages…", id="filter")
         yield Footer()
@@ -147,6 +155,13 @@ class AvdManagerApp(App):
             self.say(self.ctx.backend_error, seconds=8)
             self.detail.show_error(self.ctx.backend_error)
         self.action_refresh_all()
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-clamp the panes when the terminal shrinks."""
+        if not self.is_mounted:
+            return
+        self.set_sidebar_width(self.ctx.config.sidebar_width)
+        self.set_log_height(self.ctx.config.log_height)
 
     def on_unmount(self) -> None:
         self.ctx.runner._on_start = None
@@ -708,16 +723,26 @@ class AvdManagerApp(App):
         self.logpane.set_class(not config.log_visible, "-hidden")
         self._sync_log_chrome()
 
+    @property
+    def sidebar_limit(self) -> int:
+        """Widest the sidebar may be without starving the detail pane."""
+        return max(SIDEBAR_MIN, min(SIDEBAR_MAX, self.size.width - MIN_DETAIL_WIDTH))
+
+    @property
+    def log_limit(self) -> int:
+        """Tallest the log may be without starving the detail pane."""
+        return max(LOG_MIN, min(LOG_MAX, self.size.height - MIN_CHROME_ROWS))
+
     def set_sidebar_width(self, width: int) -> int:
         """Clamp and apply the sidebar width; returns the value used."""
-        width = max(SIDEBAR_MIN, min(width, SIDEBAR_MAX))
+        width = max(SIDEBAR_MIN, min(width, self.sidebar_limit))
         self.sidebar.styles.width = width
         self.ctx.config.sidebar_width = width
         return width
 
     def set_log_height(self, height: int) -> int:
         """Clamp and apply the log height; returns the value used."""
-        height = max(LOG_MIN, min(height, LOG_MAX))
+        height = max(LOG_MIN, min(height, self.log_limit))
         self.logpane.styles.height = height
         self.ctx.config.log_height = height
         return height
@@ -726,7 +751,7 @@ class AvdManagerApp(App):
         self.set_sidebar_width(self.ctx.config.sidebar_width + delta)
 
     def _on_log_drag(self, delta: int) -> None:
-        # The divider sits *below* the log, so dragging down grows it.
+        """Dragging the divider down grows the log beneath it."""
         if not self.ctx.config.log_visible:
             return
         self.set_log_height(self.ctx.config.log_height + delta)

@@ -81,8 +81,15 @@ in `~/.config/avdmanager/config.toml`:
   the sidebar width, or the divider under the log to change its height.
 - **Keys** — `[` and `]` resize the sidebar, `-` and `=` resize the log.
 
-Widths are clamped to 24–72 columns and the log to 3–40 rows. A nonsensical
-stored value falls back to the default rather than pinning the pane to a bound.
+Bounds are dynamic: the sidebar is 24–72 columns and the log 3–40 rows, but
+both are further capped so a pane can never squeeze its neighbour out — the
+sidebar always leaves at least 30 columns and the log at least 12 rows for
+the detail pane and app chrome. Shrinking the terminal re-clamps the panes.
+A nonsensical stored value falls back to the default rather than pinning the
+pane to a bound.
+
+Both dividers are draggable in both directions; the log's divider sits *above*
+the log, so it can be dragged down to grow it as well as up to shrink it.
 
 ## Keys
 
