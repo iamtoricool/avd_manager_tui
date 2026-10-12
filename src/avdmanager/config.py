@@ -64,6 +64,15 @@ class Config:
     #: Ring-buffer size for the log pane.
     log_history: int = 5000
 
+    # -- persisted UI state --------------------------------------------- #
+
+    #: Sidebar width in cells.
+    sidebar_width: int = 42
+    #: Log pane height in rows.
+    log_height: int = 14
+    #: Whether the log pane starts visible.
+    log_visible: bool = True
+
     def to_dict(self) -> dict:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
@@ -80,9 +89,9 @@ def default_config_path() -> Path:
     return root / APP_NAME / "config.toml"
 
 
-def load_config(path: Path | None = None) -> Config:
+def load_config(path: Path | str | None = None) -> Config:
     """Load the config file, returning defaults if it is missing or corrupt."""
-    target = path or default_config_path()
+    target = Path(path) if path else default_config_path()
     try:
         data = tomllib.loads(target.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
@@ -90,9 +99,9 @@ def load_config(path: Path | None = None) -> Config:
     return Config.from_dict(data)
 
 
-def save_config(config: Config, path: Path | None = None) -> None:
+def save_config(config: Config, path: Path | str | None = None) -> None:
     """Atomically write the config file."""
-    target = path or default_config_path()
+    target = Path(path) if path else default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".toml.tmp")
     tmp.write_text(tomli_w.dumps(_prune(config)), encoding="utf-8")

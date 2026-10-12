@@ -41,7 +41,7 @@ class Sidebar(Vertical):
     """Three stacked tree views."""
 
     DEFAULT_CSS = """
-    Sidebar { width: 42; min-width: 30; border-right: solid $primary; }
+    Sidebar { width: 42; min-width: 24; }
     Sidebar Tree { height: 1fr; min-height: 4; border: none; padding: 0 1;
                    background: transparent; }
     Sidebar Tree:focus { border: none; }

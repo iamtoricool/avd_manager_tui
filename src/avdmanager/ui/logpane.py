@@ -23,7 +23,7 @@ class LogPane(Vertical):
     """Bottom pane showing command output."""
 
     DEFAULT_CSS = """
-    LogPane { height: 14; min-height: 3; border-top: solid $primary; }
+    LogPane { height: 14; min-height: 3; }
     LogPane.-hidden { display: none; }
     LogPane > .log-title { dock: top; height: 1; padding: 0 1;
                            background: $panel; color: $text-muted; }

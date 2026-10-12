@@ -27,7 +27,7 @@ class AppContext:
 
     runner: JobRunner
     config: Config
-    config_path: Path
+    config_path: Path | str
     paths: ResolvedPaths = field(init=False)
     backend: Backend | None = field(init=False, default=None)
     backend_error: str = field(init=False, default="")

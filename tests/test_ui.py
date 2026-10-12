@@ -61,6 +61,18 @@ id: 1 or "tablet"
 """
 
 
+class _FakeEvent:
+    """Minimal stand-in for a Textual mouse event."""
+
+    def __init__(self, button: int = 1, screen_x: int = 0, screen_y: int = 0):
+        self.button = button
+        self.screen_x = screen_x
+        self.screen_y = screen_y
+
+    def stop(self) -> None:
+        pass
+
+
 class StubRunner(JobRunner):
     """Answers every SDK query from canned fixtures."""
 
@@ -111,13 +123,13 @@ def _stub_paths():
 
 
 @pytest.fixture
-def stub_context():
+def stub_context(tmp_path):
     from avdmanager.context import AppContext
     from avdmanager.services import EmulatorService, SdkService
 
     runner = StubRunner()
     paths = _stub_paths()
-    ctx = AppContext(runner=runner, config=Config(), config_path="/tmp/avdmanager-test.toml")
+    ctx = AppContext(runner=runner, config=Config(), config_path=tmp_path / "config.toml")
     ctx.paths = paths
     ctx.backend = ctx.backend or AndroidCliBackend()
     ctx.avd = AvdService(runner, paths)
@@ -539,6 +551,224 @@ async def test_ctrl_c_with_no_job_exits(app):
     assert instance.ctx.runner.active_jobs == []
     await instance.action_interrupt_cancel()
     assert instance._exit is True
+
+
+# --------------------------------------------------------------------------- #
+# Pane resizing
+# --------------------------------------------------------------------------- #
+
+
+async def test_splitters_exist(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, _pilot = app
+    vertical = instance.query_one("#sidebar-splitter", Splitter)
+    horizontal = instance.query_one("#log-splitter", Splitter)
+    assert vertical.orientation == "vertical"
+    assert horizontal.orientation == "horizontal"
+    # the vertical divider sits between the sidebar and the detail pane
+    siblings = list(vertical.parent.children)
+    assert siblings.index(vertical) == siblings.index(instance.sidebar) + 1
+    assert siblings[siblings.index(vertical) + 1] is instance.query_one("#detail")
+
+
+async def test_keyboard_resizes_the_sidebar(app):
+    instance, pilot = app
+    start = instance.ctx.config.sidebar_width
+    await pilot.press("]")
+    await pilot.pause()
+    assert instance.ctx.config.sidebar_width > start
+    await pilot.press("[")
+    await pilot.press("[")
+    await pilot.pause()
+    assert instance.ctx.config.sidebar_width < start
+
+
+async def test_sidebar_width_is_clamped(app):
+    instance, _pilot = app
+    from avdmanager.ui.app import SIDEBAR_MAX, SIDEBAR_MIN
+
+    assert instance.set_sidebar_width(5) == SIDEBAR_MIN
+    assert instance.set_sidebar_width(5000) == SIDEBAR_MAX
+    assert instance.sidebar.styles.width.value == SIDEBAR_MAX
+
+
+async def test_sidebar_width_zero_falls_back_to_the_default(app):
+    instance, _pilot = app
+    from avdmanager.ui.app import SIDEBAR_MAX, SIDEBAR_MIN
+
+    # A live resize clamps; a *persisted* value is sanitised to the default.
+    assert instance.set_sidebar_width(0) == SIDEBAR_MIN
+
+    from avdmanager.ui.app import DEFAULT_SIDEBAR_WIDTH, _sanitise
+
+    assert _sanitise(0, SIDEBAR_MIN, SIDEBAR_MAX, DEFAULT_SIDEBAR_WIDTH) == DEFAULT_SIDEBAR_WIDTH
+    assert _sanitise("nonsense", SIDEBAR_MIN, SIDEBAR_MAX, DEFAULT_SIDEBAR_WIDTH) == (
+        DEFAULT_SIDEBAR_WIDTH
+    )
+    assert _sanitise(50, SIDEBAR_MIN, SIDEBAR_MAX, DEFAULT_SIDEBAR_WIDTH) == 50
+
+
+async def test_keyboard_resizes_the_log(app):
+    instance, pilot = app
+    start = instance.ctx.config.log_height
+    await pilot.press("=")
+    await pilot.pause()
+    assert instance.ctx.config.log_height > start
+    await pilot.press("-")
+    await pilot.pause()
+    assert instance.ctx.config.log_height == start
+
+
+async def test_log_height_is_clamped(app):
+    instance, _pilot = app
+    from avdmanager.ui.app import LOG_MAX, LOG_MIN
+
+    assert instance.set_log_height(0) == LOG_MIN
+    assert instance.set_log_height(9999) == LOG_MAX
+
+
+async def test_layout_persists_to_the_config_file(app):
+    instance, pilot = app
+    await pilot.press("]")
+    await pilot.pause()
+    path = instance.ctx.config_path
+    assert path.is_file()
+
+    from avdmanager.config import load_config
+
+    reloaded = load_config(path)
+    assert reloaded.sidebar_width == instance.ctx.config.sidebar_width
+    assert reloaded.log_height == instance.ctx.config.log_height
+
+
+async def test_log_visibility_persists(app):
+    instance, pilot = app
+    await pilot.press("F4")
+    await pilot.pause()
+    assert instance.ctx.config.log_visible is False
+
+    from avdmanager.config import load_config
+
+    assert load_config(instance.ctx.config_path).log_visible is False
+
+
+async def test_dragging_the_vertical_splitter_widens_the_sidebar(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    start = instance.ctx.config.sidebar_width
+
+    await pilot.mouse_down(splitter, offset=(0, 0), button=1)
+    for _ in range(5):
+        await pilot.hover(offset=(0, 0))
+        splitter._last -= 3  # simulate the pointer moving right
+        splitter._on_drag(3)
+    splitter.on_mouse_up(_FakeEvent())
+    await pilot.pause()
+
+    assert instance.ctx.config.sidebar_width > start
+    assert splitter.dragging is False
+
+
+async def test_horizontal_drag_grows_the_log(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#log-splitter", Splitter)
+    start = instance.ctx.config.log_height
+
+    instance._on_log_drag(4)
+    await pilot.pause()
+    assert instance.ctx.config.log_height == start + 4
+    assert splitter is not None
+
+
+async def test_horizontal_drag_is_ignored_while_the_log_is_hidden(app):
+    instance, _pilot = app
+    start = instance.ctx.config.log_height
+    instance.action_toggle_log()
+    instance._on_log_drag(5)
+    assert instance.ctx.config.log_height == start
+
+
+async def test_splitter_ignores_non_left_buttons(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, _pilot = app
+    splitter = instance.query_one("#sidebar-splitter", Splitter)
+    splitter.on_mouse_down(_FakeEvent(button=3))
+    assert splitter.dragging is False
+
+
+async def test_growing_the_log_unhides_it(app):
+    instance, pilot = app
+    instance.action_toggle_log()
+    await pilot.pause()
+    assert instance.logpane.has_class("-hidden")
+
+    instance.action_grow_log()
+    await pilot.pause()
+    assert not instance.logpane.has_class("-hidden")
+
+
+async def test_log_splitter_hides_with_the_log(app):
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#log-splitter", Splitter)
+    assert splitter.display is True
+
+    instance.action_toggle_log()
+    await pilot.pause()
+    assert splitter.display is False
+
+    instance.action_toggle_log()
+    await pilot.pause()
+    assert splitter.display is True
+
+
+async def test_resized_layout_is_restored_on_startup(stub_context):
+    """A second app instance picks up the persisted geometry."""
+    from avdmanager.ui.app import AvdManagerApp
+
+    first = AvdManagerApp(stub_context)
+    async with first.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        first.set_sidebar_width(55)
+        first.set_log_height(9)
+        first._persist_layout()
+        await pilot.pause()
+        first.exit()
+
+    second = AvdManagerApp(stub_context)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        assert second.ctx.config.sidebar_width == 55
+        assert second.ctx.config.log_height == 9
+        assert second.sidebar.styles.width.value == 55
+        assert second.logpane.styles.height.value == 9
+        second.exit()
+
+
+async def test_corrupt_persisted_size_falls_back_to_defaults(app):
+    from avdmanager.config import load_config
+    from avdmanager.ui.app import DEFAULT_LOG_HEIGHT, DEFAULT_SIDEBAR_WIDTH
+
+    instance, _pilot = app
+    path = instance.ctx.config_path
+    path.write_text('sidebar_width = 9999\nlog_height = "banana"\n')
+
+    instance.ctx.config = load_config(path)
+    instance._apply_layout()
+
+    assert instance.ctx.config.sidebar_width == DEFAULT_SIDEBAR_WIDTH
+    assert instance.ctx.config.log_height == DEFAULT_LOG_HEIGHT
 
 
 # --------------------------------------------------------------------------- #

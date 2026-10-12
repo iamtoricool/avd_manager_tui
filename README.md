@@ -52,6 +52,18 @@ python3 -m venv .venv
 
 See [docs/setup.md](docs/setup.md) for Android SDK prerequisites.
 
+## Panes
+
+The sidebar and log pane are resizable two ways, and the sizes are remembered
+in `~/.config/avdmanager/config.toml`:
+
+- **Drag** the thin divider between the sidebar and the detail pane to change
+  the sidebar width, or the divider under the log to change its height.
+- **Keys** — `[` and `]` resize the sidebar, `-` and `=` resize the log.
+
+Widths are clamped to 24–72 columns and the log to 3–40 rows. A nonsensical
+stored value falls back to the default rather than pinning the pane to a bound.
+
 ## Keys
 
 | Key | Action | | Key | Action |

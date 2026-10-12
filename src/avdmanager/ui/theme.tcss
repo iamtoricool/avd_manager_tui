@@ -30,8 +30,7 @@ Screen {
 
 .sidebar {
     width: 42;
-    min-width: 30;
-    border-right: solid $primary;
+    min-width: 24;
 }
 
 .sidebar-tree {
@@ -139,7 +138,6 @@ Screen {
 #logpane {
     height: 14;
     min-height: 3;
-    border-top: solid $primary;
 }
 
 #logpane.-hidden {

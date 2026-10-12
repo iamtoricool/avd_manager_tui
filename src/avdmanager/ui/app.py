@@ -23,10 +23,18 @@ from avdmanager.ui.dialogs import (
 )
 from avdmanager.ui.logpane import LogPane
 from avdmanager.ui.sidebar import Sidebar
+from avdmanager.ui.splitter import Splitter
 from avdmanager.ui.statusbar import StatusBar
 
 #: Debounce for the package filter, in seconds.
 FILTER_DEBOUNCE = 0.35
+
+#: Pane resize bounds, in cells.
+SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_STEP = 24, 72, 2
+LOG_MIN, LOG_MAX, LOG_STEP = 3, 40, 2
+
+#: Used when a persisted pane size is missing or nonsensical.
+DEFAULT_SIDEBAR_WIDTH, DEFAULT_LOG_HEIGHT = 42, 14
 
 CMDLINE_TOOLS_URL = "https://developer.android.com/studio#command-tools"
 
@@ -61,6 +69,10 @@ class AvdManagerApp(App):
         Binding("space", "toggle_mark", "Mark package", show=False, priority=True),
         Binding("x", "stop_emulator", "Stop emulator", show=False),
         Binding("escape", "clear_marks", "Clear marks", show=False),
+        Binding("]", "widen_sidebar", "Widen sidebar", show=False),
+        Binding("[", "narrow_sidebar", "Narrow sidebar", show=False),
+        Binding("=", "grow_log", "Grow log", show=False),
+        Binding("-", "shrink_log", "Shrink log", show=False),
     ]
 
     def __init__(self, context: AppContext | None = None) -> None:
@@ -85,8 +97,20 @@ class AvdManagerApp(App):
         yield Header()
         with Horizontal(id="main"):
             yield Sidebar(id="sidebar")
+            yield Splitter(
+                "vertical",
+                on_drag=self._on_sidebar_drag,
+                on_commit=self._persist_layout,
+                id="sidebar-splitter",
+            )
             yield DetailPane(id="detail")
         yield LogPane(id="logpane")
+        yield Splitter(
+            "horizontal",
+            on_drag=self._on_log_drag,
+            on_commit=self._persist_layout,
+            id="log-splitter",
+        )
         yield StatusBar(self.ctx.runner, id="statusbar")
         yield Input(placeholder="Filter packages…", id="filter")
         yield Footer()
@@ -104,6 +128,7 @@ class AvdManagerApp(App):
         self.sidebar.focus_tree(0)
 
         self.query_one("#filter", Input).display = False
+        self._apply_layout()
         self.set_interval(2.0, self._poll_emulators)
 
         if self.ctx.backend_error:
@@ -253,6 +278,14 @@ class AvdManagerApp(App):
 
     def action_toggle_log(self) -> None:
         self.logpane.toggle()
+        self.ctx.config.log_visible = not self.logpane.has_class("-hidden")
+        self._sync_log_chrome()
+        self._persist_layout()
+
+    def _sync_log_chrome(self) -> None:
+        """Hide the log's divider along with the pane it controls."""
+        hidden = self.logpane.has_class("-hidden")
+        self.query_one("#log-splitter", Splitter).display = not hidden
 
     def action_focus_filter(self) -> None:
         widget = self.filter_input
@@ -551,6 +584,73 @@ class AvdManagerApp(App):
         await self.ctx.runner.wait(job)
         self._load_packages(self._pending_filter)
 
+    # -- pane resizing ---------------------------------------------------- #
+
+    def _apply_layout(self) -> None:
+        """Apply the persisted sidebar width, log height and visibility.
+
+        Values read back from disk are sanitised rather than clamped, so a
+        hand-edited or stale config falls back to the defaults instead of being
+        silently pinned to a bound.
+        """
+        config = self.ctx.config
+        self.set_sidebar_width(
+            _sanitise(config.sidebar_width, SIDEBAR_MIN, SIDEBAR_MAX, DEFAULT_SIDEBAR_WIDTH)
+        )
+        self.set_log_height(
+            _sanitise(config.log_height, LOG_MIN, LOG_MAX, DEFAULT_LOG_HEIGHT)
+        )
+        self.logpane.set_class(not config.log_visible, "-hidden")
+        self._sync_log_chrome()
+
+    def set_sidebar_width(self, width: int) -> int:
+        """Clamp and apply the sidebar width; returns the value used."""
+        width = max(SIDEBAR_MIN, min(width, SIDEBAR_MAX))
+        self.sidebar.styles.width = width
+        self.ctx.config.sidebar_width = width
+        return width
+
+    def set_log_height(self, height: int) -> int:
+        """Clamp and apply the log height; returns the value used."""
+        height = max(LOG_MIN, min(height, LOG_MAX))
+        self.logpane.styles.height = height
+        self.ctx.config.log_height = height
+        return height
+
+    def _on_sidebar_drag(self, delta: int) -> None:
+        self.set_sidebar_width(self.ctx.config.sidebar_width + delta)
+
+    def _on_log_drag(self, delta: int) -> None:
+        # The divider sits *below* the log, so dragging down grows it.
+        if not self.ctx.config.log_visible:
+            return
+        self.set_log_height(self.ctx.config.log_height + delta)
+
+    def _persist_layout(self) -> None:
+        """Write the current pane geometry back to the config file."""
+        try:
+            self.ctx.save_config()
+        except OSError as exc:  # a read-only HOME should not break the UI
+            self.logpane.push(f"Could not save layout: {exc}", "err")
+
+    def action_widen_sidebar(self) -> None:
+        self.set_sidebar_width(self.ctx.config.sidebar_width + SIDEBAR_STEP)
+        self._persist_layout()
+
+    def action_narrow_sidebar(self) -> None:
+        self.set_sidebar_width(self.ctx.config.sidebar_width - SIDEBAR_STEP)
+        self._persist_layout()
+
+    def action_grow_log(self) -> None:
+        if not self.ctx.config.log_visible:
+            self.action_toggle_log()
+        self.set_log_height(self.ctx.config.log_height + LOG_STEP)
+        self._persist_layout()
+
+    def action_shrink_log(self) -> None:
+        self.set_log_height(self.ctx.config.log_height - LOG_STEP)
+        self._persist_layout()
+
     # -- stopping -------------------------------------------------------- #
 
     async def action_interrupt_cancel(self) -> None:
@@ -599,6 +699,15 @@ class AvdManagerApp(App):
         self._load_packages(self._pending_filter)
 
 
+def _sanitise(value, low: int, high: int, default: int) -> int:
+    """Coerce a persisted value into range, falling back to ``default``."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if low <= number <= high else default
+
+
 def _is_platform(pkg: Package) -> bool:
     return pkg.category in ("platforms", "system-images", "sources")
 
@@ -625,6 +734,6 @@ _HELP_TEXT = (
     "PACKAGES: space mark · i install marked · u uninstall marked · f filter · "
     "esc clear marks\n"
     "SDK: L accept licences · U update all · r refresh\n"
-    "VIEW: j/k switch tree · F4 toggle log · s settings · ? this help · q quit · "
-    "ctrl+c cancel job"
+    "VIEW: j/k switch tree · [ ] sidebar width · - = log height · F4 toggle log · "
+    "s settings · ? this help · q quit · ctrl+c cancel job"
 )
