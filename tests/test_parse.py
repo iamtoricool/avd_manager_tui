@@ -215,6 +215,32 @@ def test_parse_package_table_handles_two_column_row():
     assert pkgs[0].description == ""
 
 
+def test_parse_package_table_extracts_update_marker():
+    raw = "Available packages:\n  foo/1.0    29.0.0 (+3)    Foo description\n"
+    pkgs = parse.parse_available_packages(raw)
+    assert pkgs[0].version == "29.0.0"
+    assert pkgs[0].updates == 3
+    assert pkgs[0].description == "Foo description"
+
+
+def test_parse_package_table_update_marker_from_real_output(android_cli_sysimages_output):
+    """`android sdk list --all 'system-images*'` annotates outdated packages."""
+    table = parse.parse_package_table(android_cli_sysimages_output)
+    pkgs = table.all()
+
+    assert len(pkgs) > 300
+    with_updates = [p for p in pkgs if p.updates]
+    assert with_updates, "fixture is expected to contain (+N) markers"
+    for pkg in with_updates:
+        assert "(" not in pkg.version, pkg
+        assert pkg.updates > 0
+
+
+def test_parse_package_table_update_marker_is_optional():
+    raw = "Available packages:\n  foo/1.0    29.0.0    Foo\n"
+    assert parse.parse_available_packages(raw)[0].updates == 0
+
+
 def test_parse_package_table_keeps_double_spaces_in_description():
     raw = 'Available packages:\n  foo/1.0    1.0    Some   spaced   text\n'
     pkgs = parse.parse_available_packages(raw)

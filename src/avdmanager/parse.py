@@ -179,6 +179,9 @@ _SECTION_RE = re.compile(
 # multi-space sequence inside the description column intact.
 _COLUMN_SPLIT = re.compile(r"\s{2,}")
 
+# The repository marks packages with newer versions as "30.0.0 (+2)".
+_UPDATES_RE = re.compile(r"\s*\(\+(?P<count>\d+)\)\s*$")
+
 
 @dataclass(slots=True)
 class PackageTable:
@@ -233,11 +236,19 @@ def parse_package_table(text: str) -> PackageTable:
         if len(parts) < 2:
             continue
 
+        version = parts[1].strip()
+        updates_match = _UPDATES_RE.search(version)
+        updates = 0
+        if updates_match:
+            updates = int(updates_match.group("count"))
+            version = version[: updates_match.start()].strip()
+
         pkg = Package(
             path=parts[0].strip(),
-            version=parts[1].strip(),
+            version=version,
             description=parts[2].strip() if len(parts) > 2 else "",
             installed=section == "installed",
+            updates=updates,
         )
         if section is None:
             table.other.append(pkg)

@@ -103,6 +103,8 @@ class Package:
     version: str = ""
     description: str = ""
     installed: bool = False
+    #: Number of additional versions available, parsed from a ``(+N)`` suffix.
+    updates: int = 0
 
     @property
     def segments(self) -> list[str]:
@@ -153,15 +155,23 @@ class Package:
 
     @property
     def summary(self) -> str:
-        return f"ver {self.version}" + (" • installed" if self.installed else "")
+        bits = [f"ver {self.version}"]
+        if self.installed:
+            bits.append("installed")
+        if self.updates:
+            bits.append(f"+{self.updates} update{'s' if self.updates != 1 else ''}")
+        return " • ".join(bits)
 
     def detail_rows(self) -> list[tuple[str, str]]:
-        return [
+        rows = [
             ("Package", self.path),
             ("Version", self.version),
             ("Description", self.description),
             ("Status", "Installed" if self.installed else "Available"),
         ]
+        if self.updates:
+            rows.append(("Updates", f"{self.updates} newer version(s) available"))
+        return rows
 
 
 @dataclass(slots=True)

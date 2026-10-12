@@ -47,3 +47,9 @@ def installed_list_output() -> str:
 @pytest.fixture(scope="session")
 def android_cli_list_output() -> str:
     return read_fixture("android_sdk_list.txt")
+
+
+@pytest.fixture(scope="session")
+def android_cli_sysimages_output() -> str:
+    """`android sdk list --all 'system-images*'` -- exercises the (+N) marker."""
+    return read_fixture("android_sdk_list_sysimages.txt")
