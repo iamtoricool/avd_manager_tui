@@ -28,7 +28,12 @@ packages = ["src/avdmanager"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    # A coroutine that is created but never awaited is always a bug -- it means
+    # an `async def` was called without `await`. Fail loudly instead of warning.
+    "error::RuntimeWarning",
+]
 
 [tool.ruff]
 line-length = 100

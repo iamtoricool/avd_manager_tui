@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -109,7 +107,7 @@ class AvdManagerApp(App):
         self.set_interval(2.0, self._poll_emulators)
 
         if self.ctx.backend_error:
-            self.notify(self.ctx.backend_error, seconds=8)
+            self.say(self.ctx.backend_error, seconds=8)
             self.detail.show_error(self.ctx.backend_error)
         self.action_refresh_all()
 
@@ -221,6 +219,15 @@ class AvdManagerApp(App):
         await self.ctx.emulator.refresh_devices()
         self.sidebar.set_running(self.ctx.emulator.running_avds())
 
+    def say(self, message: str, seconds: float = 4.0) -> None:
+        """Show a transient message in the status bar and as a toast.
+
+        ``self.notify`` is Textual's toast API, so it bypasses the status bar's
+        message cell; call this instead so both surfaces stay in sync.
+        """
+        self.statusbar.notify(message, seconds)
+        App.notify(self, message)
+
     # ------------------------------------------------------------------ #
     # Actions
     # ------------------------------------------------------------------ #
@@ -253,7 +260,7 @@ class AvdManagerApp(App):
         widget.focus()
 
     def action_help(self) -> None:
-        self.notify(_HELP_TEXT, seconds=10)
+        self.say(_HELP_TEXT, seconds=10)
 
     # -- settings -------------------------------------------------------- #
 
@@ -277,9 +284,7 @@ class AvdManagerApp(App):
         self.statusbar.set_backend(self.ctx.backend_label)
         self.statusbar.set_health(self.ctx.paths.issues)
         if self.ctx.paths.issues:
-            self.logpane.push(
-                f"SDK issues: {'; '.join(self.ctx.paths.issues)}", "info"
-            )
+            self.say(f"SDK: {'; '.join(self.ctx.paths.issues)}", seconds=8)
 
     # -- AVD actions ------------------------------------------------------ #
 
@@ -289,7 +294,7 @@ class AvdManagerApp(App):
         await self._load_devices_call()
         images = [p for p in self._packages if p.category == "system-images" and p.installed]
         if not images:
-            self.notify("No system images installed. Install one from SDK Platforms first.")
+            self.say("No system images installed. Install one from SDK Platforms first.")
             return
 
         def on_result(result) -> None:
@@ -333,7 +338,7 @@ class AvdManagerApp(App):
     async def action_rename(self) -> None:
         avd = self.sidebar.selected_avd()
         if avd is None:
-            self.notify("Select an AVD to rename.")
+            self.say("Select an AVD to rename.")
             return
 
         def on_result(new_name) -> None:
@@ -360,7 +365,7 @@ class AvdManagerApp(App):
     async def action_delete(self) -> None:
         avd = self.sidebar.selected_avd()
         if avd is None:
-            self.notify("Select an AVD to delete.")
+            self.say("Select an AVD to delete.")
             return
         detail = [f"Name: {avd.name}", f"Path: {avd.path}", f"Image: {avd.based_on}"]
         await self.push_screen(
@@ -380,11 +385,11 @@ class AvdManagerApp(App):
             return
         avd = self.sidebar.selected_avd()
         if avd is None:
-            self.notify("Select an AVD to launch.")
+            self.say("Select an AVD to launch.")
             return
         state = self.ctx.emulator.state_of(avd.name)
         if state is EmulatorState.RUNNING:
-            self.notify(f"{avd.name} is already running.")
+            self.say(f"{avd.name} is already running.")
             return
         opts = config_mod.parse_emulator_opts(self.ctx.config.emulator_opts)
         self.logpane.push(f"Launching {avd.name}…", "info")
@@ -392,26 +397,26 @@ class AvdManagerApp(App):
             avd.name, opts, on_line=lambda text, kind: self.logpane.push(text, kind)
         )
         self._active_jobs[job.id] = job
-        self.notify(f"Emulator {avd.name} starting…")
+        self.say(f"Emulator {avd.name} starting…")
 
-    def action_reveal(self) -> None:
+    async def action_reveal(self) -> None:
         avd = self.sidebar.selected_avd()
         if avd is None or not avd.path:
-            self.notify("Select an AVD first.")
+            self.say("Select an AVD first.")
             return
-        ok, message = _run_awaitable(reveal_in_file_manager(avd.path))
-        self.notify(message)
+        _ok, message = await reveal_in_file_manager(avd.path)
+        self.say(message)
 
-    def action_edit_config(self) -> None:
+    async def action_edit_config(self) -> None:
         avd = self.sidebar.selected_avd()
         if avd is None or not avd.config_ini:
-            self.notify("Select an AVD first.")
+            self.say("Select an AVD first.")
             return
         ok, message = open_in_editor(avd.config_ini)
         if not ok:
-            # Fall back to the desktop opener before giving up.
-            ok, message = _run_awaitable(reveal_in_file_manager(avd.config_ini))
-        self.notify(message)
+            # No $EDITOR configured; fall back to the desktop opener.
+            _ok, message = await reveal_in_file_manager(avd.config_ini)
+        self.say(message)
 
     # -- package actions -------------------------------------------------- #
 
@@ -422,11 +427,11 @@ class AvdManagerApp(App):
             return
         marked_paths = {p.path for p in self.sidebar.marked_packages()}
         state = "marked" if pkg.path in marked_paths else "unmarked"
-        self.notify(f"{pkg.path} {state} ({self.sidebar.mark_count()} marked)")
+        self.say(f"{pkg.path} {state} ({self.sidebar.mark_count()} marked)")
 
     def action_clear_marks(self) -> None:
         self.sidebar.clear_marks()
-        self.notify("Marks cleared.")
+        self.say("Marks cleared.")
 
     def _batch_targets(self, *, require_installed: bool) -> list[Package]:
         """Marked packages if any are marked, otherwise the highlighted one."""
@@ -445,7 +450,7 @@ class AvdManagerApp(App):
     async def action_install(self) -> None:
         targets = self._batch_targets(require_installed=False)
         if not targets:
-            self.notify("Select an available package, or press space to mark several.")
+            self.say("Select an available package, or press space to mark several.")
             return
         detail = [f"  {p.path}  ({p.version})" for p in targets]
         if len(targets) > 1:
@@ -465,7 +470,7 @@ class AvdManagerApp(App):
     async def action_uninstall(self) -> None:
         targets = self._batch_targets(require_installed=True)
         if not targets:
-            self.notify("Select an installed package, or press space to mark several.")
+            self.say("Select an installed package, or press space to mark several.")
             return
         detail = [f"  {p.path}  ({p.version})" for p in targets]
         detail.append("")
@@ -488,17 +493,17 @@ class AvdManagerApp(App):
             return
         avd = self.sidebar.selected_avd()
         if avd is None:
-            self.notify("Select an AVD first.")
+            self.say("Select an AVD first.")
             return
         if not await self.ctx.emulator.stop_job(avd.name):
             result = await self.ctx.emulator.stop(avd.name)
-            self.notify(
+            self.say(
                 f"Stopped {avd.name}"
                 if result.ok
                 else f"Could not stop {avd.name}: {result.output.strip()}"
             )
         else:
-            self.notify(f"Stopped {avd.name}")
+            self.say(f"Stopped {avd.name}")
         await self.ctx.emulator.refresh_devices()
         self.sidebar.set_running(self.ctx.emulator.running_avds())
 
@@ -532,7 +537,7 @@ class AvdManagerApp(App):
         )
         self._active_jobs[job.id] = job
         await self.ctx.runner.wait(job)
-        self.notify("Licence acceptance finished.")
+        self.say("Licence acceptance finished.")
 
     def action_update_all(self) -> None:
         self._update_all()
@@ -548,14 +553,14 @@ class AvdManagerApp(App):
 
     # -- stopping -------------------------------------------------------- #
 
-    def action_interrupt_cancel(self) -> None:
+    async def action_interrupt_cancel(self) -> None:
         """Ctrl+C cancels the newest running job, or quits when idle."""
         job = self.statusbar.cancel_focused_job()
         if job is None:
             self.exit()
             return
-        self.ctx.runner.cancel(job)
-        self.notify(f"Cancelling {job.label}…")
+        await self.ctx.runner.cancel(job)
+        self.say(f"Cancelling {job.label}…")
 
     # ------------------------------------------------------------------ #
     # Messages
@@ -607,17 +612,6 @@ def _validate_new_name(name: str, current: str, avds: list[Avd]) -> str | None:
 
 def status_hint() -> str:
     return "i install · u uninstall · f filter"
-
-
-def _run_awaitable(coro):
-    """Run a coroutine from a synchronous action handler."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        return asyncio.ensure_future(coro)
-    return asyncio.run(coro)
 
 
 def _default_runner():

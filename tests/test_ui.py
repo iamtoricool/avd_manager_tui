@@ -427,6 +427,121 @@ async def test_settings_modal_opens_and_previews_resolution(app):
 
 
 # --------------------------------------------------------------------------- #
+# Actions that shell out
+# --------------------------------------------------------------------------- #
+
+
+async def test_reveal_action_awaits_the_opener(app, monkeypatch):
+    """Regression: a sync action that unpacked a Future crashed with
+    'await wasn't used with future'."""
+    from avdmanager.ui import app as app_module
+
+    seen: list[str] = []
+
+    async def fake_reveal(path: str):
+        seen.append(path)
+        return True, f"Opened {path}"
+
+    monkeypatch.setattr(app_module, "reveal_in_file_manager", fake_reveal)
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+
+    await instance.action_reveal()
+    await pilot.pause()
+
+    assert seen == ["/home/u/.android/avd/Pixel_36_Ultra.avd"]
+
+
+async def test_edit_config_uses_editor_when_available(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+
+    opened: list[str] = []
+
+    def fake_editor(path: str, editor: str = ""):
+        opened.append(path)
+        return True, f"Opened {path}"
+
+    async def should_not_run(path: str):
+        raise AssertionError("fallback must not run when $EDITOR works")
+
+    monkeypatch.setattr(app_module, "open_in_editor", fake_editor)
+    monkeypatch.setattr(app_module, "reveal_in_file_manager", should_not_run)
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+
+    await instance.action_edit_config()
+    await pilot.pause()
+
+    assert opened == ["/home/u/.android/avd/Pixel_36_Ultra.avd/config.ini"]
+
+
+async def test_edit_config_falls_back_to_the_desktop_opener(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+
+    fallbacks: list[str] = []
+
+    def no_editor(path: str, editor: str = ""):
+        return False, "Set $EDITOR or configure one in Settings."
+
+    async def fake_reveal(path: str):
+        fallbacks.append(path)
+        return True, f"Opened {path}"
+
+    monkeypatch.setattr(app_module, "open_in_editor", no_editor)
+    monkeypatch.setattr(app_module, "reveal_in_file_manager", fake_reveal)
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+
+    await instance.action_edit_config()
+    await pilot.pause()
+
+    assert fallbacks == ["/home/u/.android/avd/Pixel_36_Ultra.avd/config.ini"]
+
+
+async def test_reveal_without_a_selection_notifies(app):
+    instance, pilot = app
+    instance.sidebar.focus_tree(2)  # a package tree, so no AVD is selected
+    instance.sidebar.tools_tree.root.children[0].expand()
+    await pilot.pause()
+    await instance.action_reveal()
+    await pilot.pause()
+    assert instance.statusbar._message == "Select an AVD first."
+
+
+async def test_ctrl_c_cancels_the_running_job(app):
+    """Regression: `runner.cancel` was called without being awaited."""
+    instance, pilot = app
+    import asyncio
+
+    job = await instance.ctx.runner.start(
+        ["sleep", "30"], label="test job", mutation=False
+    )
+    await asyncio.sleep(0.2)
+
+    await instance.action_interrupt_cancel()
+    await asyncio.wait_for(job._done.wait(), timeout=10)
+
+    assert job.status.terminal
+    assert not instance.ctx.runner.active_jobs
+
+
+async def test_ctrl_c_with_no_job_exits(app):
+    instance, _pilot = app
+    assert instance.ctx.runner.active_jobs == []
+    await instance.action_interrupt_cancel()
+    assert instance._exit is True
+
+
+# --------------------------------------------------------------------------- #
 # Pure helpers used by the UI
 # --------------------------------------------------------------------------- #
 
