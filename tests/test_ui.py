@@ -940,6 +940,233 @@ async def test_delete_and_wipe_are_distinct(app):
 
 
 # --------------------------------------------------------------------------- #
+# Create-AVD wizard
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def wizard_context(stub_context):
+    """A context with an installed system image so `n` opens the wizard."""
+    from avdmanager.models import Device, Package
+
+    stub_context._packages = [
+        Package(
+            "system-images/android-36/google_apis_playstore/x86_64",
+            "7.0.0",
+            "Google Play Intel x86_64",
+            installed=True,
+        ),
+        Package("system-images/android-34/google_apis/x86_64", "14.0.0", "Google APIs", True),
+    ]
+    stub_context._devices = [
+        Device(0, "pixel_7", "Pixel 7", "Google", "phone"),
+        Device(1, "tablet", '10.1" Tablet', "Generic", ""),
+    ]
+    return stub_context
+
+
+@pytest.fixture
+async def wizard(wizard_context):
+    """The create-AVD modal, opened and mounted."""
+    from avdmanager.ui.dialogs import CreateAvdModal
+
+    instance = AvdManagerApp(wizard_context)
+    async with instance.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        modal = CreateAvdModal(
+            wizard_context._packages,
+            wizard_context._devices,
+            existing_names={"Pixel_7"},
+            default_sdcard="512M",
+        )
+        instance.push_screen(modal)
+        await pilot.pause()
+        yield instance, pilot, modal
+
+
+async def test_wizard_opens_on_step_one(wizard):
+    from textual.containers import Vertical
+
+    _instance, pilot, modal = wizard
+    assert modal.query_one("#step-name", Vertical).display is True
+    assert modal.query_one("#step-image", Vertical).display is False
+    assert str(modal.query_one("#next").label) == "Next"
+
+
+async def test_wizard_rejects_an_invalid_name(wizard):
+    from textual.widgets import Input
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "has space"
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    assert "invalid" in str(modal.query_one("#wizard-error").render())
+    assert modal._step == 0
+
+
+async def test_wizard_rejects_a_duplicate_name(wizard):
+    from textual.widgets import Input
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "Pixel_7"
+    modal.action_next_or_down()
+    await pilot.pause()
+    assert "already exists" in str(modal.query_one("#wizard-error").render())
+
+
+async def test_wizard_advances_through_every_step(wizard):
+    """Regression: re-mounting a step raised DuplicateIds on the second step."""
+    from textual.containers import Vertical
+    from textual.widgets import Input
+
+    instance, pilot, modal = wizard
+
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    assert modal._step == 1
+    assert modal.query_one("#step-image", Vertical).display is True
+
+    modal.action_next_or_down()
+    await pilot.pause()
+    assert modal._step == 2
+    assert str(modal.query_one("#next").label) == "Create"
+
+
+async def test_wizard_back_navigates_without_rebuilding(wizard):
+    from textual.containers import Vertical
+    from textual.widgets import Input
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    modal.query_one("#back").press()
+    await pilot.pause()
+    assert modal._step == 1
+    assert modal.query_one("#step-image", Vertical).display is True
+
+    modal.query_one("#back").press()
+    await pilot.pause()
+    assert modal._step == 0
+    assert modal.query_one("#wizard-name", Input).value == "FreshAVD"
+
+
+async def test_wizard_returns_a_create_result(wizard):
+    from textual.widgets import Input
+
+    _instance, pilot, modal = wizard
+    results: list[object] = []
+    modal.dismiss = lambda value: results.append(value)
+
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.query_one("#wizard-sdcard", Input).value = "256M"
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.name == "FreshAVD"
+    assert result.package_path == "system-images/android-36/google_apis_playstore/x86_64"
+    assert result.sdcard == "256M"
+
+
+async def test_wizard_device_filter_toggles_visibility(wizard):
+    from textual.widgets import Input, Label, ListView
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    view = modal.query_one("#wizard-devices", ListView)
+    assert len(view.children) == 3  # default + 2 devices
+
+    modal.query_one("#wizard-device", Input).value = "tablet"
+    await pilot.pause()
+    visible = [c for c in view.children if c.display]
+    assert len(visible) == 2  # default + the tablet
+    assert '10.1" Tablet' in str(visible[1].query_one(Label).content)
+
+
+async def test_wizard_device_selection_is_captured(wizard):
+    from textual.widgets import Input, ListView
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    view = modal.query_one("#wizard-devices", ListView)
+    # children are [default, Pixel 7 (id 0), 10.1" Tablet (id 1)]
+    view.index = 1
+    modal.on_list_view_highlighted(
+        type("E", (), {"list_view": view, "item": view.children[1]})()
+    )
+    assert modal._device_id == 0
+
+    view.index = 0  # back to the default profile
+    modal.on_list_view_highlighted(
+        type("E", (), {"list_view": view, "item": view.children[0]})()
+    )
+    assert modal._device_id is None
+
+
+async def test_wizard_with_no_images_warns(wizard_context):
+    from avdmanager.ui.dialogs import CreateAvdModal
+
+    instance = AvdManagerApp(wizard_context)
+    async with instance.run_test() as pilot:
+        await pilot.pause()
+        modal = CreateAvdModal([], wizard_context._devices)
+        instance.push_screen(modal)
+        await pilot.pause()
+
+        from textual.widgets import Input
+
+        modal.query_one("#wizard-name", Input).value = "FreshAVD"
+        modal.action_next_or_down()
+        await pilot.pause()
+        modal.action_next_or_down()
+        await pilot.pause()
+
+        assert "No system images" in str(modal.query_one("#wizard-error").render())
+
+
+async def test_wizard_can_be_cancelled(wizard):
+    _instance, pilot, modal = wizard
+    modal.action_cancel()
+    await pilot.pause()
+
+
+async def test_new_avd_opens_the_wizard(wizard_context):
+    from avdmanager.ui.dialogs import CreateAvdModal
+
+    instance = AvdManagerApp(wizard_context)
+    async with instance.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.pause(0.05)
+        await instance.action_new_avd()
+        await pilot.pause()
+        assert isinstance(instance.screen, CreateAvdModal)
+
+
+# --------------------------------------------------------------------------- #
 # Pure helpers used by the UI
 # --------------------------------------------------------------------------- #
 

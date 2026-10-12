@@ -3,6 +3,13 @@
 Three steps driven from one screen: name, system image, hardware profile (and
 an optional sdcard size). Only installed system images are offered, because
 ``avdmanager create avd -k`` cannot install anything itself.
+
+All three steps are built once in :meth:`compose` and shown or hidden by
+toggling ``display``. An earlier revision rebuilt the step widgets on every
+transition, calling ``remove_children()`` and then ``mount()`` in the same
+synchronous block -- ``remove_children`` only *schedules* removal in Textual,
+so re-registering the same widget IDs raised ``DuplicateIds`` the moment the
+user advanced a step.
 """
 
 from __future__ import annotations
@@ -16,6 +23,9 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from avdmanager.models import Device, Package
 from avdmanager.services.avd import validate_avd_name
+
+#: ListItem id used for "no hardware profile".
+DEFAULT_DEVICE_ID = "dev-default"
 
 
 @dataclass
@@ -39,9 +49,11 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
     CreateAvdModal .dialog-hint { color: $text-muted; padding-bottom: 1; }
     CreateAvdModal .step-title { color: $warning; text-style: bold;
                                  padding-top: 1; }
+    CreateAvdModal .wizard-step { height: 1fr; }
     CreateAvdModal ListView { height: 1fr; border: round $primary;
                               overflow-y: auto; margin-top: 1; }
-    CreateAvdModal .dialog-error { color: $error; height: auto; padding-top: 1; }
+    CreateAvdModal #wizard-sdcard { height: 3; }
+    CreateAvdModal .dialog-error { color: $error; height: auto; }
     CreateAvdModal .dialog-buttons { height: auto; padding-top: 1;
                                      align-horizontal: right; }
     CreateAvdModal Button { margin-left: 2; }
@@ -73,8 +85,10 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
         self._name = ""
         self._image: Package | None = None
         self._device_id: int | None = None
-        self._device_label = "Default (no hardware profile)"
         self._sdcard = default_sdcard
+
+        #: ListItem id -> device id (``None`` for the default profile).
+        self._device_by_item: dict[str, int | None] = {}
 
     # ------------------------------------------------------------------ #
     # Composition
@@ -87,117 +101,139 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
                 "Pick a name, a system image, and optionally a hardware profile.",
                 classes="dialog-hint",
             )
-            yield Vertical(id="wizard-body")
+            with Vertical(id="wizard-body"):
+                yield from self._step_name()
+                yield from self._step_image()
+                yield from self._step_device()
             yield Static("", classes="dialog-error", id="wizard-error")
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Back", id="back")
                 yield Button("Next", id="next", variant="primary")
 
+    def _step_name(self) -> ComposeResult:
+        with Vertical(classes="wizard-step", id="step-name"):
+            yield Static("1. Name", classes="step-title")
+            yield Static(
+                "Letters, digits and underscores only. Must be unique.",
+                classes="dialog-hint",
+            )
+            yield Input(placeholder="MyAVD", id="wizard-name")
+
+    def _step_image(self) -> ComposeResult:
+        with Vertical(classes="wizard-step", id="step-image"):
+            yield Static("2. System image", classes="step-title")
+            yield Static(
+                f"Only installed images are listed ({len(self._images)} found).",
+                classes="dialog-hint",
+                id="wizard-image-count",
+            )
+            yield ListView(id="wizard-images")
+
+    def _step_device(self) -> ComposeResult:
+        with Vertical(classes="wizard-step", id="step-device"):
+            yield Static("3. Hardware profile", classes="step-title")
+            yield Static(
+                "Optional. The default profile matches the system image.",
+                classes="dialog-hint",
+            )
+            yield Input(placeholder="Type to filter devices, e.g. pixel_7", id="wizard-device")
+            yield ListView(id="wizard-devices")
+            yield Static("SD card size", classes="step-title")
+            yield Input(value=self._default_sdcard, placeholder="512M", id="wizard-sdcard")
+
     def on_mount(self) -> None:
-        self._render()
+        self._populate_images()
+        self._populate_devices()
+        self._show_step(0)
 
     # ------------------------------------------------------------------ #
-    # Steps
+    # Populating (once, never re-mounted)
     # ------------------------------------------------------------------ #
 
-    def _render(self) -> None:
-        body = self.query_one("#wizard-body", Vertical)
-        body.remove_children()
-        error = self.query_one("#wizard-error", Static)
-        error.update("")
-        back = self.query_one("#back", Button)
-        next_button = self.query_one("#next", Button)
-
-        if self._step == 0:
-            body.mount(
-                Static("1. Name", classes="step-title"),
-                Static(
-                    "Letters, digits and underscores only. Must be unique.",
-                    classes="dialog-hint",
-                ),
-                Input(placeholder="MyAVD", id="wizard-name"),
-            )
-            self.query_one("#wizard-name", Input).focus()
-            next_button.label = "Next"
-            back.display = False
-
-        elif self._step == 1:
-            body.mount(
-                Static("2. System image", classes="step-title"),
-                Static(
-                    f"Only installed images are listed ({len(self._images)} found).",
-                    classes="dialog-hint",
-                ),
-                ListView(
-                    *[
-                        ListItem(
-                            Label(
-                                f"{pkg.description}\n"
-                                f"[detail-value]{pkg.path}  ({pkg.version})[/]"
-                            )
-                        )
-                        for pkg in self._images
-                    ],
-                    id="wizard-images",
-                ),
-            )
-            view = self.query_one("#wizard-images", ListView)
-            if self._images:
-                view.index = 0
-                view.focus()
-            next_button.label = "Next"
-            back.display = True
-
-        elif self._step == 2:
-            body.mount(
-                Static("3. Hardware profile", classes="step-title"),
-                Static(
-                    "Optional. The default profile matches the system image.",
-                    classes="dialog-hint",
-                ),
-                Input(
-                    placeholder="Type to filter devices, e.g. pixel_7",
-                    id="wizard-device",
-                ),
-                ListView(id="wizard-devices"),
-                Static("SD card size", classes="step-title"),
-                Input(value=self._default_sdcard, placeholder="512M", id="wizard-sdcard"),
-            )
-            self._render_devices("")
-            self.query_one("#wizard-device", Input).focus()
-            next_button.label = "Create"
-            back.display = True
-
-    def _render_devices(self, needle: str) -> None:
-        view = self.query_one("#wizard-devices", ListView)
+    def _populate_images(self) -> None:
+        view = self.query_one("#wizard-images", ListView)
         view.clear()
-        lowered = needle.strip().lower()
-        entries: list[tuple[str, int | None]] = [("Default (no hardware profile)", None)]
-        for device in self._devices:
-            haystack = f"{device.name} {device.oem} {device.tag} {device.id_name}".lower()
-            if not lowered or lowered in haystack:
-                entries.append((f"{device.name}  ·  {device.summary}", device.id))
-
-        if len(entries) == 1:
-            view.append(ListItem(Label("No matching hardware profile.")))
+        if not self._images:
+            view.append(ListItem(Label("No system images installed.")))
             return
-        for label, device_id in entries:
-            item = ListItem(Label(label))
-            item.device_id = device_id
-            view.append(item)
+        for pkg in self._images:
+            view.append(
+                ListItem(
+                    Label(f"{pkg.description}\n[detail-value]{pkg.path}  ({pkg.version})[/]")
+                )
+            )
         view.index = 0
+
+    def _populate_devices(self, needle: str = "") -> None:
+        """Build every device item once; filtering only toggles visibility."""
+        view = self.query_one("#wizard-devices", ListView)
+        if not view.children:
+            entries: list[tuple[str, str, int | None]] = [
+                ("Default (no hardware profile)", DEFAULT_DEVICE_ID, None)
+            ]
+            for device in self._devices:
+                label = f"{device.name}  ·  {device.summary}"
+                entries.append((label, f"dev-{device.id}", device.id))
+
+            for label, item_id, device_id in entries:
+                item = ListItem(Label(label), id=item_id)
+                self._device_by_item[item_id] = device_id
+                view.append(item)
+
+        lowered = needle.strip().lower()
+        for item in view.children:
+            device_id = self._device_by_item.get(item.id)
+            if device_id is None:
+                matches = True
+            else:
+                device = next((d for d in self._devices if d.id == device_id), None)
+                haystack = (
+                    f"{device.name} {device.oem} {device.tag} {device.id_name}"
+                    if device
+                    else ""
+                ).lower()
+                matches = not lowered or lowered in haystack
+            item.display = matches
+
+        visible = [i for i, item in enumerate(view.children) if item.display]
+        view.index = visible[0] if visible else None
+        self._sync_device(view)
+
+    def _sync_device(self, view: ListView) -> None:
+        index = view.index
+        if index is None:
+            self._device_id = None
+            return
+        node = view.children[index] if index < len(view.children) else None
+        self._device_id = self._device_by_item.get(node.id) if node is not None else None
 
     # ------------------------------------------------------------------ #
     # Navigation
     # ------------------------------------------------------------------ #
 
+    def _show_step(self, step: int) -> None:
+        """Toggle which step is visible. No widgets are created or destroyed."""
+        self._step = step
+        for index, step_id in enumerate(("step-name", "step-image", "step-device")):
+            self.query_one(f"#{step_id}", Vertical).display = index == step
+
+        self.query_one("#back", Button).display = step > 0
+        self.query_one("#next", Button).label = "Create" if step == 2 else "Next"
+        self.query_one("#wizard-error", Static).update("")
+
+        focus = {
+            0: "#wizard-name",
+            1: "#wizard-images",
+            2: "#wizard-device",
+        }[step]
+        self.query_one(focus).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
         elif event.button.id == "back":
-            self._step = max(0, self._step - 1)
-            self._render()
+            self._show_step(self._step - 1)
         else:
             self.action_next_or_down()
 
@@ -206,15 +242,11 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "wizard-device":
-            self._render_devices(event.value)
+            self._populate_devices(event.value)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        item = event.item
-        if item is None:
-            return
-        device_id = getattr(item, "device_id", None)
-        if device_id is not None or isinstance(getattr(item, "device_id", None), int):
-            self._device_id = item.device_id
+        if event.list_view is self.query_one("#wizard-devices", ListView):
+            self._sync_device(event.list_view)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_next_or_down()
@@ -224,32 +256,34 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
         if error:
             self.query_one("#wizard-error", Static).update(error)
             return
-        self.query_one("#wizard-error", Static).update("")
         if self._step > 2:
             self.action_confirm()
 
     def _advance(self) -> str:
+        if self._step > 2:
+            return ""  # already past the last step
+
         if self._step == 0:
             name = self.query_one("#wizard-name", Input).value.strip()
             error = validate_avd_name(name, self._existing)
             if error:
                 return error
             self._name = name
-            self._step = 1
-            self._render()
+            self._show_step(1)
             return ""
 
         if self._step == 1:
-            view = self.query_one("#wizard-images", ListView)
-            index = view.index or 0
             if not self._images:
                 return "No system images are installed. Install one from SDK Platforms first."
+            view = self.query_one("#wizard-images", ListView)
+            index = view.index or 0
             self._image = self._images[min(index, len(self._images) - 1)]
-            self._step = 2
-            self._render()
+            self._show_step(2)
             return ""
 
         self._sdcard = self.query_one("#wizard-sdcard", Input).value.strip()
+        # Step past the end so action_next_or_down() knows to submit.
+        self._step = 3
         return ""
 
     def action_confirm(self) -> None:
