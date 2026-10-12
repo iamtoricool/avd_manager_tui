@@ -13,13 +13,20 @@ from avdmanager.context import AppContext
 from avdmanager.models import Avd, Package
 from avdmanager.runner import Job
 from avdmanager.services import CreateRequest, EmulatorState
-from avdmanager.services.avd import open_in_editor, reveal_in_file_manager
+from avdmanager.services.avd import (
+    human_size,
+    open_in_editor,
+    reveal_in_file_manager,
+    storage_artifacts,
+    storage_size,
+)
 from avdmanager.ui.detail import DetailPane
 from avdmanager.ui.dialogs import (
     ConfirmModal,
     CreateAvdModal,
     PromptModal,
     SettingsModal,
+    TypeToConfirmModal,
 )
 from avdmanager.ui.logpane import LogPane
 from avdmanager.ui.sidebar import Sidebar
@@ -35,6 +42,9 @@ LOG_MIN, LOG_MAX, LOG_STEP = 3, 40, 2
 
 #: Used when a persisted pane size is missing or nonsensical.
 DEFAULT_SIDEBAR_WIDTH, DEFAULT_LOG_HEIGHT = 42, 14
+
+#: Phrase the user must type to confirm wiping every AVD's storage.
+WIPE_ALL_PHRASE = "WIPE ALL"
 
 CMDLINE_TOOLS_URL = "https://developer.android.com/studio#command-tools"
 
@@ -53,6 +63,7 @@ class AvdManagerApp(App):
         ("n", "new_avd", "New AVD"),
         ("l", "launch", "Launch"),
         ("d", "delete", "Delete"),
+        Binding("w", "wipe", "Wipe AVD", show=False),
         ("i", "install", "Install"),
         ("u", "uninstall", "Uninstall"),
         ("s", "settings", "Settings"),
@@ -68,6 +79,7 @@ class AvdManagerApp(App):
         Binding("k", "focus_prev_tree", "Previous tree", show=False),
         Binding("space", "toggle_mark", "Mark package", show=False, priority=True),
         Binding("x", "stop_emulator", "Stop emulator", show=False),
+        Binding("W", "wipe_all", "Wipe all AVDs", show=False),
         Binding("escape", "clear_marks", "Clear marks", show=False),
         Binding("]", "widen_sidebar", "Widen sidebar", show=False),
         Binding("[", "narrow_sidebar", "Narrow sidebar", show=False),
@@ -451,6 +463,99 @@ class AvdManagerApp(App):
             _ok, message = await reveal_in_file_manager(avd.config_ini)
         self.say(message)
 
+    # -- wiping ----------------------------------------------------------- #
+
+    def _emulator_is_running(self, avd: Avd) -> bool:
+        if self.ctx.emulator is None:
+            return False
+        return self.ctx.emulator.state_of(avd.name) is EmulatorState.RUNNING
+
+    def _wipe_detail(self, avd: Avd) -> list[str]:
+        """What a wipe destroys, and what it keeps."""
+        data_dir = self.ctx.avd.data_dir(avd.name)
+        artifacts = storage_artifacts(data_dir)
+        lines = [f"  AVD:  {avd.name}  ({avd.based_on})"]
+        lines.append(
+            f"  Will erase {len(artifacts)} item(s), {human_size(storage_size(data_dir))}"
+        )
+        for path in artifacts[:6]:
+            lines.append(f"    - {path.name}")
+        if len(artifacts) > 6:
+            lines.append(f"    - … and {len(artifacts) - 6} more")
+        lines.append("")
+        lines.append("  Will KEEP the AVD itself: config.ini, hardware profile and name.")
+        return lines
+
+    async def action_wipe(self) -> None:
+        """Reset an AVD's storage, keeping the device itself."""
+        avd = self.sidebar.selected_avd()
+        if avd is None:
+            self.say("Select an AVD to wipe.")
+            return
+        if self._emulator_is_running(avd):
+            self.say(f"{avd.name} is running — stop it with x first.")
+            return
+
+        await self.push_screen(
+            ConfirmModal(
+                f"Wipe storage for {avd.name}?",
+                "Apps, accounts and all data on the device are destroyed. "
+                "The device itself is kept.",
+                detail=self._wipe_detail(avd),
+                confirm_label="Wipe storage",
+            ),
+            lambda confirmed: self._wipe(avd) if confirmed else None,
+        )
+
+    @work(exclusive=False, group="avd")
+    async def _wipe(self, avd: Avd) -> None:
+        self.logpane.push(f"Wiping storage for {avd.name}…", "info")
+        _ok, removed = await self.ctx.avd.wipe_storage(avd)
+        for path in removed:
+            self.logpane.push(f"  removed {path.name}", "info")
+        self.say(f"Wiped {avd.name}: {len(removed)} item(s) erased, AVD kept")
+        self._load_avds()
+
+    async def action_wipe_all(self) -> None:
+        """Reset the storage of every AVD, gated behind a type-to-confirm."""
+        if not self.ready:
+            return
+        if not self._avds:
+            self.say("No AVDs to wipe.")
+            return
+
+        busy = [a.name for a in self._avds if self._emulator_is_running(a)]
+        if busy:
+            self.say(f"Stop the running emulator(s) first: {', '.join(busy)}")
+            return
+
+        total = sum(storage_size(self.ctx.avd.data_dir(a.name)) for a in self._avds)
+        detail = [f"  {avd.name}  ({avd.based_on})" for avd in self._avds]
+        detail.append("")
+        detail.append(f"{len(self._avds)} device(s), {human_size(total)} of data erased.")
+        detail.append("Every AVD is kept; only its data is reset.")
+
+        await self.push_screen(
+            TypeToConfirmModal(
+                "Wipe the storage of every AVD?",
+                "All apps, accounts and data on all devices are destroyed.",
+                detail=detail,
+                phrase=WIPE_ALL_PHRASE,
+                confirm_label="Wipe all storage",
+            ),
+            lambda confirmed: self._wipe_all() if confirmed else None,
+        )
+
+    @work(exclusive=False, group="avd")
+    async def _wipe_all(self) -> None:
+        total = 0
+        for avd in self._avds:
+            _ok, removed = await self.ctx.avd.wipe_storage(avd)
+            total += len(removed)
+            self.logpane.push(f"Wiped {avd.name}: {len(removed)} item(s) erased", "info")
+        self.say(f"Wiped {len(self._avds)} device(s), {total} item(s) erased")
+        self._load_avds()
+
     # -- package actions -------------------------------------------------- #
 
     def action_toggle_mark(self) -> None:
@@ -676,7 +781,7 @@ class AvdManagerApp(App):
     def show_detail(self, kind: str, payload) -> None:
         """Render a node's detail pane."""
         if kind == "avd":
-            footer = "l launch · e rename · d delete · R reveal folder · c config.ini"
+            footer = "l launch · w wipe · e rename · d delete · R reveal folder · c config.ini"
             self.detail.show_rows(payload.name, payload.detail_rows(), footer=footer)
         elif kind == "pkg":
             footer = "u uninstall" if payload.installed else "i install"
@@ -730,7 +835,8 @@ def _default_runner():
 
 
 _HELP_TEXT = (
-    "AVDS: n new · l launch · x stop · e rename · d delete · R reveal · c config.ini\n"
+    "AVDS: n new · l launch · x stop · w wipe · W wipe all · e rename · d delete · "
+    "R reveal · c config.ini\n"
     "PACKAGES: space mark · i install marked · u uninstall marked · f filter · "
     "esc clear marks\n"
     "SDK: L accept licences · U update all · r refresh\n"

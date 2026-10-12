@@ -11,9 +11,11 @@ import asyncio
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from avdmanager import parse
 from avdmanager.config import ResolvedPaths
@@ -132,6 +134,117 @@ class AvdService:
             mutation=True,
             on_line=on_line,
         )
+
+    # ------------------------------------------------------------------ #
+    # Wipe
+    # ------------------------------------------------------------------ #
+
+    @property
+    def avd_home(self) -> Path:
+        """Where AVD pointers and data directories live."""
+        configured = self._paths.avd_home
+        return Path(configured) if configured else Path.home() / ".android" / "avd"
+
+    def data_dir(self, name: str) -> Path:
+        """The AVD's data directory (``<avd home>/<name>.avd``)."""
+        return self.avd_home / f"{name}.avd"
+
+    async def wipe_storage(self, avd: Avd) -> tuple[bool, list[Path]]:
+        """Reset an AVD's *storage*, keeping the device itself.
+
+        This is the filesystem equivalent of ``emulator -wipe-data``: the user
+        data, cache, encryption keys and snapshots are destroyed so the next
+        boot starts from a factory image, while ``config.ini``, the ``.ini``
+        pointer and the hardware profile all survive.
+
+        Deliberately a denylist: anything not recognised as device data is left
+        alone, so a file type added by a future emulator release is never
+        deleted on a guess.
+        """
+        removed = await asyncio.to_thread(wipe_storage_files, self.data_dir(avd.name))
+        return True, removed
+
+
+# --------------------------------------------------------------------------- #
+# Filesystem helpers
+# --------------------------------------------------------------------------- #
+
+#: Device *data* inside an AVD directory. Removing these is what
+#: `emulator -wipe-data` does. The AVD's config.ini and its `.ini` pointer are
+#: not in here, which is precisely why a wipe is not a delete.
+STORAGE_ARTIFACTS: tuple[str, ...] = (
+    "userdata*.img*",
+    "cache*.img*",
+    "encryptionkey*",
+    "*.qcow2",
+    "snapshots",
+    "data",
+)
+
+#: Runtime leftovers the emulator regenerates on the next boot.
+RUNTIME_LEFTOVERS: tuple[str, ...] = (
+    "bootcompleted.ini",
+    "emu-launch-params.txt",
+    "emulator-user.ini",
+    "*.log",
+)
+
+
+def storage_artifacts(avd_dir: Path) -> list[Path]:
+    """Storage files currently present in ``avd_dir``, without deleting them."""
+    if not avd_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for pattern in (*STORAGE_ARTIFACTS, *RUNTIME_LEFTOVERS):
+        found.extend(sorted(avd_dir.glob(pattern)))
+    # de-duplicate while keeping order
+    return list(dict.fromkeys(found))
+
+
+def wipe_storage_files(avd_dir: Path) -> list[Path]:
+    """Delete an AVD's storage artifacts. Returns what was removed."""
+    removed: list[Path] = []
+    for path in storage_artifacts(avd_dir):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+            else:
+                continue
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def storage_size(avd_dir: Path) -> int:
+    """Bytes the AVD's storage artifacts occupy."""
+    return sum(directory_size(p) for p in storage_artifacts(avd_dir))
+
+
+def directory_size(path: Path) -> int:
+    """Total bytes under ``path``, tolerating unreadable entries."""
+    if not path.is_dir():
+        return path.stat().st_size if path.exists() else 0
+    total = 0
+    for root, _dirs, files in os.walk(path, onerror=lambda _e: None):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def human_size(num_bytes: int) -> str:
+    """Format a byte count the way the SDK tools do."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 # --------------------------------------------------------------------------- #

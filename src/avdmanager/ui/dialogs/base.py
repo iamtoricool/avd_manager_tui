@@ -73,6 +73,98 @@ class ConfirmModal(ModalScreen[bool]):
 
 
 # --------------------------------------------------------------------------- #
+# Type-to-confirm
+# --------------------------------------------------------------------------- #
+
+
+class TypeToConfirmModal(ModalScreen[bool]):
+    """Confirmation that requires typing an exact phrase.
+
+    Used for irreversible, wide-reaching operations such as wiping every AVD,
+    where a stray Enter should not be enough.
+    """
+
+    DEFAULT_CSS = """
+    TypeToConfirmModal { align: center middle; }
+    TypeToConfirmModal #dialog-body { width: 80; height: auto; padding: 1 2;
+                                       background: $surface; border: round $error; }
+    TypeToConfirmModal .dialog-title { text-style: bold; color: $error; }
+    TypeToConfirmModal .dialog-hint { color: $text-muted; padding-bottom: 1; }
+    TypeToConfirmModal .confirm-warning { color: $warning; text-style: bold; }
+    TypeToConfirmModal .confirm-phrase { color: $accent; text-style: bold; }
+    TypeToConfirmModal .field-label { color: $text-muted; padding-top: 1; }
+    TypeToConfirmModal .dialog-error { color: $error; height: auto; padding-top: 1; }
+    TypeToConfirmModal .dialog-buttons { height: auto; padding-top: 1;
+                                         align-horizontal: right; }
+    TypeToConfirmModal Button { margin-left: 2; }
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        *,
+        detail: list[str] | None = None,
+        phrase: str,
+        confirm_label: str = "Wipe everything",
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+        self._detail = detail or []
+        self._phrase = phrase
+        self._confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog-body"):
+            yield Static(self._title, classes="dialog-title")
+            yield Static(self._message)
+            if self._detail:
+                yield Static("")
+                for line in self._detail:
+                    yield Static(line, classes="confirm-warning")
+            yield Static("")
+            yield Static(
+                f'Type [class="confirm-phrase"]{self._phrase}[/] to continue:',
+                classes="field-label",
+            )
+            yield Input(placeholder=self._phrase, id="confirm-input")
+            yield Static("", classes="dialog-error", id="confirm-error")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button(self._confirm_label, id="confirm", variant="error", disabled=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm-input", Input).focus()
+
+    def _matches(self, value: str) -> bool:
+        return value.strip() == self._phrase
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        matched = self._matches(event.value)
+        self.query_one("#confirm", Button).disabled = not matched
+        self.query_one("#confirm-error", Static).update(
+            "" if matched or not event.value.strip() else "Phrase does not match."
+        )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._matches(event.value):
+            self.dismiss(True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm":
+            if self._matches(self.query_one("#confirm-input", Input).value):
+                self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+# --------------------------------------------------------------------------- #
 # Text input
 # --------------------------------------------------------------------------- #
 

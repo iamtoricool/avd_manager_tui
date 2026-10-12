@@ -772,6 +772,174 @@ async def test_corrupt_persisted_size_falls_back_to_defaults(app):
 
 
 # --------------------------------------------------------------------------- #
+# Wipe storage
+# --------------------------------------------------------------------------- #
+
+
+async def test_wipe_requires_confirmation(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+    from avdmanager.ui.dialogs import ConfirmModal
+
+    monkeypatch.setattr(app_module, "storage_artifacts", lambda _d: [])
+    monkeypatch.setattr(app_module, "storage_size", lambda _d: 0)
+
+    wiped: list[str] = []
+
+    async def record(avd):
+        wiped.append(avd.name)
+        return True, []
+
+    monkeypatch.setattr(app_module.AvdManagerApp, "_wipe", record)
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+
+    await instance.action_wipe()
+    await pilot.pause()
+
+    # the modal is up and nothing has happened yet
+    assert isinstance(instance.screen, ConfirmModal)
+    assert wiped == []
+    assert instance.screen._confirm_label == "Wipe storage"
+
+    # cancelling must not wipe
+    instance.screen.dismiss(False)
+    await pilot.pause()
+    assert wiped == []
+
+
+async def test_wipe_detail_states_what_is_kept(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+    from avdmanager.ui.dialogs import ConfirmModal
+
+    monkeypatch.setattr(app_module, "storage_artifacts", lambda _d: [])
+    monkeypatch.setattr(app_module, "storage_size", lambda _d: 0)
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+    await instance.action_wipe()
+    await pilot.pause()
+
+    assert isinstance(instance.screen, ConfirmModal)
+    text = "\\n".join(instance.screen._detail)
+    assert "KEEP" in text
+    assert "config.ini" in text
+
+
+async def test_wipe_refuses_while_the_emulator_runs(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+
+    monkeypatch.setattr(
+        app_module.AvdManagerApp, "_emulator_is_running", lambda self, avd: True
+    )
+
+    instance, pilot = app
+    instance.sidebar.avd_tree.focus()
+    await pilot.press("down")
+    await pilot.pause()
+
+    await instance.action_wipe()
+    await pilot.pause()
+
+    # no modal, no wipe
+    assert not isinstance(instance.screen, app_module.ConfirmModal)
+    assert "running" in instance.statusbar._message
+
+
+async def test_wipe_needs_an_avd_selection(app):
+    instance, pilot = app
+    instance.sidebar.tools_tree.focus()
+    instance.sidebar.tools_tree.root.children[0].expand()
+    for _ in range(3):
+        await pilot.pause(0.05)
+    await pilot.press("w")
+    await pilot.pause()
+    assert instance.statusbar._message == "Select an AVD to wipe."
+
+
+async def test_wipe_all_requires_the_exact_phrase(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+    from avdmanager.ui.app import WIPE_ALL_PHRASE
+    from avdmanager.ui.dialogs import TypeToConfirmModal
+
+    monkeypatch.setattr(app_module, "storage_size", lambda _d: 0)
+
+    instance, pilot = app
+    await instance.action_wipe_all()
+    await pilot.pause()
+
+    assert isinstance(instance.screen, TypeToConfirmModal)
+    modal = instance.screen
+    from textual.widgets import Button, Input
+
+    confirm = modal.query_one("#confirm", Button)
+    assert confirm.disabled is True
+
+    modal.query_one("#confirm-input", Input).value = "wipe all"
+    await pilot.pause()
+    assert confirm.disabled is True  # wrong case
+
+    modal.query_one("#confirm-input", Input).value = WIPE_ALL_PHRASE
+    await pilot.pause()
+    assert confirm.disabled is False
+
+
+async def test_wipe_all_does_nothing_when_declined(app):
+
+    instance, pilot = app
+    await instance.action_wipe_all()
+    await pilot.pause()
+    instance.screen.dismiss(False)
+    await pilot.pause()
+    assert instance._avds, "AVDs should be untouched"
+
+
+async def test_wipe_all_refuses_while_an_emulator_runs(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+
+    monkeypatch.setattr(
+        app_module.AvdManagerApp, "_emulator_is_running", lambda self, avd: True
+    )
+    instance, pilot = app
+    await instance.action_wipe_all()
+    await pilot.pause()
+    assert not isinstance(instance.screen, app_module.TypeToConfirmModal)
+    assert "Stop the running emulator" in instance.statusbar._message
+
+
+async def test_wipe_all_with_no_avds(app, monkeypatch):
+    from avdmanager.ui import app as app_module
+
+    monkeypatch.setattr(app_module.AvdManagerApp, "_load_avds", lambda self: None)
+    instance, pilot = app
+    instance._avds = []
+    await instance.action_wipe_all()
+    await pilot.pause()
+    assert instance.statusbar._message == "No AVDs to wipe."
+
+
+async def test_delete_and_wipe_are_distinct(app):
+    """`d` deletes the device; `w` only resets its data."""
+    from textual.binding import Binding
+
+    from avdmanager.ui.app import AvdManagerApp
+
+    bindings = {}
+    for entry in AvdManagerApp.BINDINGS:
+        binding = entry if isinstance(entry, Binding) else Binding(*entry)
+        bindings[binding.key] = binding.action
+
+    assert bindings["d"] == "delete"
+    assert bindings["w"] == "wipe"
+    assert bindings["W"] == "wipe_all"
+    assert bindings["x"] == "stop_emulator"
+
+
+# --------------------------------------------------------------------------- #
 # Pure helpers used by the UI
 # --------------------------------------------------------------------------- #
 

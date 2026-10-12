@@ -8,6 +8,8 @@ a handful of end-to-end checks that use the SDK installed on this machine
 from __future__ import annotations
 
 import asyncio
+import time
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +17,7 @@ from avdmanager.backends import AndroidCliBackend, SdkManagerBackend
 from avdmanager.config import Config, ResolvedTool, resolve
 from avdmanager.context import AppContext, build_context
 from avdmanager.models import Package
-from avdmanager.runner import CaptureResult, JobRunner
+from avdmanager.runner import CaptureResult, Job, JobRunner, JobStatus
 from avdmanager.services import AvdService, EmulatorService, SdkService
 from avdmanager.services.avd import CreateRequest, validate_avd_name
 from avdmanager.services.emulator import EmulatorState
@@ -25,10 +27,11 @@ from avdmanager.services.emulator import EmulatorState
 # --------------------------------------------------------------------------- #
 
 
-class FakeRunner:
-    """Records calls and replays canned command output."""
+class FakeRunner(JobRunner):
+    """Records calls, replays canned output, and finishes jobs immediately."""
 
     def __init__(self, responses: dict[tuple[str, ...], CaptureResult] | None = None):
+        super().__init__()
         self.responses = responses or {}
         self.captured: list[list[str]] = []
         self.started: list[dict] = []
@@ -36,23 +39,27 @@ class FakeRunner:
     async def capture(self, argv, **kwargs) -> CaptureResult:
         argv = [str(a) for a in argv]
         self.captured.append(argv)
-        key = tuple(argv[1:3])
-        if key in self.responses:
-            return self.responses[key]
         for pattern, response in self.responses.items():
             if all(part in argv for part in pattern):
                 return response
         return CaptureResult(argv=argv, stdout="", stderr="", returncode=0)
 
     async def start(self, argv, **kwargs):
+        """Record the call and return an already-finished job.
+
+        No process is spawned: these tests assert on argv and kwargs, not on
+        real Android tooling.
+        """
         argv = [str(a) for a in argv]
         self.started.append({"argv": argv, **kwargs})
-
-        class _Job:
-            id = 1
-            status = type("S", (), {"value": "running", "terminal": False})()
-
-        return _Job()
+        self._counter += 1
+        job = Job(id=self._counter, label="stub", argv=argv)
+        job.status = JobStatus.DONE
+        job.started_at = time.monotonic()
+        job.ended_at = job.started_at
+        job._done.set()
+        self._history.append(job)
+        return job
 
 
 def canned(stdout: str = "", stderr: str = "", rc: int = 0) -> CaptureResult:
@@ -350,6 +357,181 @@ async def test_emulator_stop_falls_back_to_emu_kill(paths):
     assert result.ok
     assert runner.captured[0] == [paths.android_cli, "emulator", "stop", "Pixel_7"]
     assert runner.captured[1] == [paths.adb, "emu", "kill"]
+
+
+# --------------------------------------------------------------------------- #
+# Wipe storage
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def avd_dir(tmp_path):
+    """A realistic AVD data directory."""
+    from avdmanager.services.avd import AvdService  # noqa: F401
+
+    d = tmp_path / "avd_home" / "Pixel_7.avd"
+    d.mkdir(parents=True)
+    (d / "config.ini").write_text("avd.ini.encoding=UTF-8\n")
+    (d / "AVD.conf").write_text("hw.cpu.arch=x86_64\n")
+    (d / "hardware-qemu.ini").write_text("hw.ramSize=2048\n")
+    (d / "sdcard.img").write_bytes(b"x" * 64)
+    (d / "userdata-qemu.img").write_bytes(b"x" * 4096)
+    (d / "cache.img").write_bytes(b"x" * 1024)
+    (d / "cache.img.qcow2").write_bytes(b"x" * 512)
+    (d / "encryptionkey.img").write_bytes(b"x" * 128)
+    (d / "overlay.qcow2").write_bytes(b"x" * 256)
+    (d / "bootcompleted.ini").write_text("")
+    (d / "emu-launch-params.txt").write_text("...")
+    (d / "emulator.log").write_text("log")
+    (d / "snapshots").mkdir()
+    (d / "snapshots" / "default_boot").mkdir()
+    (d / "snapshots" / "default_boot" / "ram.img").write_bytes(b"x" * 32)
+    (d / "data").mkdir()
+    (d / "data" / "userdata.img").write_bytes(b"x" * 32)
+    return d
+
+
+def test_avd_home_defaults_to_android_dir(paths):
+    from avdmanager.services.avd import AvdService
+
+    paths.avd_home = ""
+    assert AvdService(FakeRunner(), paths).avd_home == Path.home() / ".android" / "avd"
+
+
+def test_avd_home_honours_configuration(paths):
+    from avdmanager.services.avd import AvdService
+
+    paths.avd_home = "/custom/avd/home"
+    assert AvdService(FakeRunner(), paths).avd_home == Path("/custom/avd/home")
+
+
+def test_data_dir_derives_from_avd_home(paths):
+    from avdmanager.services.avd import AvdService
+
+    paths.avd_home = "/custom/avd/home"
+    assert AvdService(FakeRunner(), paths).data_dir("Pixel_7").name == "Pixel_7.avd"
+
+
+def test_storage_artifacts_finds_data_but_not_definition(avd_dir):
+    from avdmanager.services.avd import storage_artifacts
+
+    names = {p.name for p in storage_artifacts(avd_dir)}
+    assert {"userdata-qemu.img", "cache.img", "cache.img.qcow2", "encryptionkey.img",
+            "overlay.qcow2", "snapshots", "data", "bootcompleted.ini",
+            "emu-launch-params.txt", "emulator.log"} <= names
+    # the device definition must never be classified as storage
+    assert "config.ini" not in names
+    assert "AVD.conf" not in names
+    assert "hardware-qemu.ini" not in names
+
+
+def test_wipe_storage_keeps_the_avd(paths, avd_dir):
+    """The headline guarantee: a wipe must not delete the AVD."""
+    from avdmanager.services.avd import wipe_storage_files
+
+    removed = wipe_storage_files(avd_dir)
+
+    assert removed, "expected artifacts to be removed"
+    # definition survives
+    assert (avd_dir / "config.ini").is_file()
+    assert (avd_dir / "AVD.conf").is_file()
+    assert (avd_dir / "hardware-qemu.ini").is_file()
+    assert (avd_dir / "sdcard.img").is_file()
+    # data is gone
+    assert not (avd_dir / "userdata-qemu.img").exists()
+    assert not (avd_dir / "cache.img").exists()
+    assert not (avd_dir / "encryptionkey.img").exists()
+    assert not (avd_dir / "snapshots").exists()
+    assert not (avd_dir / "data").exists()
+
+
+def test_wipe_storage_leaves_unknown_files_alone(avd_dir):
+    """Denylist semantics: an unrecognised file is never deleted on a guess."""
+    from avdmanager.services.avd import wipe_storage_files
+
+    mystery = avd_dir / "future-emulator-artifact.bin"
+    mystery.write_bytes(b"x")
+
+    wipe_storage_files(avd_dir)
+    assert mystery.is_file()
+
+
+def test_wipe_storage_is_idempotent(avd_dir):
+    from avdmanager.services.avd import wipe_storage_files
+
+    assert wipe_storage_files(avd_dir)
+    assert wipe_storage_files(avd_dir) == []
+
+
+def test_wipe_storage_tolerates_missing_dir(tmp_path):
+    from avdmanager.services.avd import storage_artifacts, wipe_storage_files
+
+    missing = tmp_path / "nope"
+    assert storage_artifacts(missing) == []
+    assert wipe_storage_files(missing) == []
+
+
+def test_storage_size_counts_only_artifacts(avd_dir):
+    from avdmanager.services.avd import storage_size
+
+    # 4096 + 1024 + 512 + 128 + 256 + 32(snapshots) + 32(data) + log leftovers
+    assert storage_size(avd_dir) > 6000
+
+
+async def test_service_wipe_storage_keeps_the_avd(paths, avd_dir):
+    """End-to-end through the service: wipes data, keeps the device."""
+    from avdmanager.models import Avd
+    from avdmanager.services.avd import AvdService
+
+    paths.avd_home = str(avd_dir.parent)
+    service = AvdService(FakeRunner(), paths)
+
+    ok, removed = await service.wipe_storage(Avd(name="Pixel_7"))
+
+    assert ok is True
+    assert removed
+    assert (avd_dir / "config.ini").is_file()
+    assert not (avd_dir / "userdata-qemu.img").exists()
+    # no subprocess is involved: a wipe must not shell out to avdmanager
+    assert service._runner.started == []
+
+
+# --------------------------------------------------------------------------- #
+# Size formatting
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, "0 B"),
+        (512, "512 B"),
+        (2048, "2.0 KB"),
+        (5 * 1024**2, "5.0 MB"),
+        (3 * 1024**3, "3.0 GB"),
+        (2 * 1024**4, "2.0 TB"),
+    ],
+)
+def test_human_size(value, expected):
+    from avdmanager.services.avd import human_size
+
+    assert human_size(value) == expected
+
+
+def test_directory_size_ignores_missing_paths(tmp_path):
+    from avdmanager.services.avd import directory_size
+
+    assert directory_size(tmp_path / "nope") == 0
+
+
+def test_directory_size_counts_recursively(tmp_path):
+    from avdmanager.services.avd import directory_size
+
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    (deep / "userdata.img").write_bytes(b"x" * 500)
+    (tmp_path / "a" / "cache.img").write_bytes(b"x" * 500)
+    assert directory_size(tmp_path) == 1000
 
 
 # --------------------------------------------------------------------------- #

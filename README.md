@@ -25,7 +25,8 @@ VS Code extension.
 
 **AVDs** — browse with full detail, create via a guided wizard (name, system
 image, hardware profile, sdcard), rename, delete, launch, reveal the AVD
-folder, open `config.ini` in your editor.
+folder, open `config.ini` in your editor, and **wipe an AVD's storage**
+(userdata, cache, encryption keys, snapshots) without deleting the device.
 
 **SDK platforms** — platforms, system images and sources grouped by Android
 release, newest first, with `installed/total` counts per group.
@@ -51,6 +52,25 @@ python3 -m venv .venv
 ```
 
 See [docs/setup.md](docs/setup.md) for Android SDK prerequisites.
+
+## Wipe vs delete
+
+These are deliberately different operations, and the app keeps them apart:
+
+| | `d` delete | `w` wipe |
+|---|---|---|
+| The AVD itself | **removed** | **kept** |
+| `config.ini`, hardware profile, name | gone | kept |
+| Userdata, cache, encryption keys, snapshots | gone | erased |
+| Next state | AVD no longer exists | boots from a factory image |
+
+`w` erases only files it recognises as device *data*. Anything unrecognised is
+left alone, so a file introduced by a future emulator release is never deleted
+on a guess. The confirmation dialog lists exactly what will be erased and
+repeats that the device itself is kept; `W` additionally requires typing
+`WIPE ALL`.
+
+Wiping is refused while an emulator is running — stop it with `x` first.
 
 ## Panes
 
