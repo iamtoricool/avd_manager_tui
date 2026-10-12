@@ -154,6 +154,20 @@ class Package:
         return self.name
 
     @property
+    def api_level(self) -> float | None:
+        """Numeric API level for platform packages, else ``None``.
+
+        Used to order the SDK Platforms tree newest-first.
+        """
+        segs = self.segments
+        if segs[0] in ("platforms", "system-images") and len(segs) >= 2:
+            try:
+                return float(segs[1].removeprefix("android-"))
+            except ValueError:
+                return None
+        return None
+
+    @property
     def summary(self) -> str:
         bits = [f"ver {self.version}"]
         if self.installed:

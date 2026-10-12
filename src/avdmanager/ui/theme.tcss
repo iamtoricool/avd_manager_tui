@@ -1,0 +1,301 @@
+/* avdmanager theme
+   Layout mirrors the reference extension: three tree views on the left, a
+   detail pane in the middle and an output log along the bottom.
+*/
+
+Screen {
+    layers: base overlay;
+    background: $surface;
+}
+
+/* ------------------------------------------------------------------ */
+/* Section headings                                                   */
+/* ------------------------------------------------------------------ */
+
+.section-title {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+    text-style: bold;
+    background: $panel;
+}
+
+.section-title.-active {
+    color: $accent;
+}
+
+.sidebar {
+    width: 42;
+    min-width: 30;
+    border-right: solid $primary;
+}
+
+.sidebar-tree {
+    height: 1fr;
+    min-height: 5;
+    border: none;
+    padding: 0 1;
+    background: transparent;
+}
+
+.sidebar-tree:focus {
+    border: none;
+}
+
+.sidebar-tree > .tree--cursor {
+    background: $accent 30%;
+    color: $text;
+    text-style: bold;
+}
+
+.sidebar-tree > .tree--guides,
+.sidebar-tree > .tree--guides-hover,
+.sidebar-tree > .tree--guides-selected {
+    color: $primary 40%;
+}
+
+.tree--label {
+    text-style: none;
+}
+
+/* installed / available markers */
+.installed {
+    color: $success;
+}
+
+.available {
+    color: $text-muted;
+}
+
+.updatable {
+    color: $warning;
+}
+
+.running {
+    color: $accent;
+    text-style: bold;
+}
+
+/* ------------------------------------------------------------------ */
+/* Detail pane                                                        */
+/* ------------------------------------------------------------------ */
+
+#detail {
+    height: 1fr;
+    padding: 1 2;
+    overflow-y: auto;
+    scrollbar-size-vertical: 1;
+}
+
+#detail-title {
+    text-style: bold;
+    color: $accent;
+    padding-bottom: 1;
+}
+
+.detail-row {
+    height: auto;
+    padding: 0 0 0 2;
+}
+
+.detail-key {
+    color: $text-muted;
+}
+
+.detail-value {
+    color: $text;
+}
+
+.detail-empty {
+    color: $text-muted;
+    padding: 2 0;
+}
+
+.detail-path {
+    color: $secondary;
+}
+
+.health-ok {
+    color: $success;
+}
+
+.health-warn {
+    color: $warning;
+}
+
+.health-error {
+    color: $error;
+}
+
+/* ------------------------------------------------------------------ */
+/* Log                                                                */
+/* ------------------------------------------------------------------ */
+
+#logpane {
+    height: 14;
+    min-height: 3;
+    border-top: solid $primary;
+}
+
+#logpane.-hidden {
+    display: none;
+}
+
+#log {
+    height: 1fr;
+    border: none;
+    background: $boost;
+}
+
+#log-title {
+    dock: top;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}
+
+.log-line-out {
+    color: $text;
+}
+
+.log-line-err {
+    color: $error;
+}
+
+.log-line-info {
+    color: $secondary;
+    text-style: italic;
+}
+
+.log-line-cmd {
+    color: $accent;
+    text-style: bold;
+}
+
+/* ------------------------------------------------------------------ */
+/* Status bar                                                         */
+/* ------------------------------------------------------------------ */
+
+#statusbar {
+    height: 1;
+    padding: 0 1;
+    background: $panel-darken-1;
+    color: $text-muted;
+}
+
+.status-cell {
+    width: auto;
+    padding: 0 1 0 0;
+}
+
+#status-jobs.-busy {
+    color: $accent;
+    text-style: bold;
+}
+
+#status-health.-error {
+    color: $error;
+}
+
+#status-health.-warn {
+    color: $warning;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dialogs                                                            */
+/* ------------------------------------------------------------------ */
+
+Dialog {
+    background: $surface 60%;
+}
+
+#dialog-body {
+    width: 80;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    background: $surface;
+    border: round $accent;
+}
+
+.dialog-title {
+    text-style: bold;
+    color: $accent;
+    padding-bottom: 1;
+}
+
+.dialog-hint {
+    color: $text-muted;
+    padding-bottom: 1;
+}
+
+.dialog-error {
+    color: $error;
+    height: auto;
+    padding-top: 1;
+}
+
+.dialog-buttons {
+    height: auto;
+    padding-top: 1;
+    align-horizontal: right;
+}
+
+.dialog-buttons Button {
+    margin-left: 2;
+}
+
+.confirm-warning {
+    color: $warning;
+    text-style: bold;
+}
+
+.field-label {
+    color: $text-muted;
+    padding-top: 1;
+}
+
+.field-value {
+    height: 3;
+}
+
+.package-list {
+    height: 12;
+    border: round $primary;
+    overflow-y: auto;
+}
+
+.hint-row {
+    color: $text-muted;
+    padding-top: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Help overlay                                                       */
+/* ------------------------------------------------------------------ */
+
+#help-body {
+    width: 72;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    background: $surface;
+    border: round $accent;
+}
+
+.help-section {
+    color: $accent;
+    text-style: bold;
+    padding-top: 1;
+}
+
+.help-key {
+    color: $warning;
+}
+
+.busy-notice {
+    color: $warning;
+    padding: 0 1;
+}
