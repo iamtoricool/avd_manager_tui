@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from avdmanager import parse
+from avdmanager.models import Package
 
 # --------------------------------------------------------------------------- #
 # Output normalisation
@@ -377,3 +378,24 @@ def test_api_level_info_known(level, expected):
 
 def test_api_level_info_unknown_returns_none():
     assert parse.api_level_info("9999") is None
+
+
+def test_no_group_label_duplicates_the_codename():
+    """Guard against labels like "Android 13 (Tiramisu) (Tiramisu)"."""
+    for path in (
+        "platforms/android-33",
+        "platforms/android-33-ext5",
+        "system-images/android-34/google_apis/x86_64",
+        "system-images/android-21/default/x86",
+    ):
+        group = Package(path).group
+        assert group.count("(") == group.count(")") <= 1, (path, group)
+
+
+def test_platform_group_uses_release_name():
+    assert Package("platforms/android-36").group == "Android 16 (Baklava)"
+    assert Package("system-images/android-36/google_apis/x86_64").group == "Android 16 (Baklava)"
+
+
+def test_unknown_api_level_falls_back_to_raw_segment():
+    assert Package("platforms/android-99").group == "Android 99"

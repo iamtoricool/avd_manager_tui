@@ -23,7 +23,7 @@ import re
 import signal
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -38,7 +38,7 @@ PROMPT_RE = re.compile(
 )
 
 LineCallback = Callable[[str, str], None]
-AnswerCallback = Callable[[], "asyncio.Future[None] | None"]
+AnswerCallback = Callable[[], "Awaitable[None]"]
 
 #: Bytes pulled from a stream per read.
 _CHUNK = 4096
@@ -213,7 +213,7 @@ class JobRunner:
         *,
         label: str = "",
         mutation: bool = False,
-        auto_confirm: bool = False,
+        answer_text: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         on_line: LineCallback | None = None,
@@ -245,7 +245,7 @@ class JobRunner:
 
         coro = self._supervise(
             job,
-            auto_confirm=auto_confirm,
+            answer_text=answer_text,
             cwd=cwd,
             env=env,
             on_line=on_line,
@@ -259,7 +259,7 @@ class JobRunner:
         self,
         job: Job,
         *,
-        auto_confirm: bool,
+        answer_text: str | None,
         cwd: str | None,
         env: dict[str, str] | None,
         on_line: LineCallback | None,
@@ -298,7 +298,7 @@ class JobRunner:
             emit = on_line or self._on_line
 
             async def answer() -> None:
-                await self._answer_prompt(job)
+                await self._answer_prompt(job, answer_text or "y\n")
 
             def sink(kind: str) -> Callable[[str], None]:
                 def _sink(line: str) -> None:
@@ -308,15 +308,16 @@ class JobRunner:
 
                 return _sink
 
+            def answer_cb() -> Awaitable[None] | None:
+                return answer if answer_text is not None else None
+
             pumps = [
                 asyncio.create_task(
-                    pump_stream(
-                        process.stdout, sink("out"), answer if auto_confirm else None
-                    ),
+                    pump_stream(process.stdout, sink("out"), answer_cb()),
                     name=f"job-{job.id}-stdout",
                 ),
                 asyncio.create_task(
-                    pump_stream(process.stderr, sink("err"), answer if auto_confirm else None),
+                    pump_stream(process.stderr, sink("err"), answer_cb()),
                     name=f"job-{job.id}-stderr",
                 ),
             ]
@@ -352,12 +353,13 @@ class JobRunner:
             if self._on_finish:
                 self._on_finish(job)
 
-    async def _answer_prompt(self, job: Job) -> None:
+    async def _answer_prompt(self, job: Job, answer_text: str) -> None:
         process = job.process
         if process is None or process.stdin is None or process.stdin.is_closing():
             return
+        payload = answer_text if answer_text.endswith("\n") else answer_text + "\n"
         with contextlib.suppress(ProcessLookupError, ConnectionResetError, BrokenPipeError):
-            process.stdin.write(b"y\n")
+            process.stdin.write(payload.encode())
             await process.stdin.drain()
 
     async def wait(self, job: Job, timeout: float | None = None) -> Job:
@@ -403,7 +405,7 @@ class JobRunner:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = 120,
-        auto_confirm: bool = False,
+        answer_text: str | None = None,
         on_line: LineCallback | None = None,
     ) -> CaptureResult:
         """Run a command to completion and return its output.
@@ -430,8 +432,9 @@ class JobRunner:
 
         async def answer() -> None:
             if process.stdin is not None and not process.stdin.is_closing():
+                payload = answer_text if answer_text.endswith("\n") else answer_text + "\n"
                 with contextlib.suppress(Exception):
-                    process.stdin.write(b"y\n")
+                    process.stdin.write(payload.encode())
                     await process.stdin.drain()
 
         collected: dict[str, list[str]] = {"out": [], "err": []}
@@ -444,7 +447,7 @@ class JobRunner:
 
             return _sink
 
-        answer_cb = answer if auto_confirm else None
+        answer_cb = answer if answer_text is not None else None
 
         async def drain(reader: asyncio.StreamReader | None, kind: str) -> None:
             await pump_stream(reader, sink(kind), answer_cb)

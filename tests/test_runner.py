@@ -99,7 +99,7 @@ async def test_capture_auto_confirms_prompts():
     )
     runner = r.JobRunner()
     result = await runner.capture(
-        [sys.executable, "-c", script], auto_confirm=True, timeout=10
+        [sys.executable, "-c", script], answer_text="y", timeout=10
     )
     assert result.ok
     assert "got:y" in result.stdout
@@ -181,7 +181,7 @@ async def test_job_auto_confirms_prompt():
         "    sys.stdin.readline()\n"
         "print('all answered')\n"
     )
-    job = await runner.start([sys.executable, "-c", script], auto_confirm=True)
+    job = await runner.start([sys.executable, "-c", script], answer_text="y")
     await runner.wait(job, timeout=10)
     assert job.ok
     assert "all answered" in job.stdout_text()
