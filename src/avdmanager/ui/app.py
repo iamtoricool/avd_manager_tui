@@ -6,7 +6,8 @@ import asyncio
 
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Input, Tree
 
 from avdmanager import config as config_mod
@@ -38,25 +39,27 @@ class AvdManagerApp(App):
     CSS_PATH = "theme.tcss"
     TITLE = "AVD Manager"
 
+    # Secondary actions stay bound but are hidden from the footer, which
+    # overflows on a normal 100-120 column terminal otherwise. Press ? for all.
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh_all", "Refresh"),
         ("n", "new_avd", "New AVD"),
         ("l", "launch", "Launch"),
-        ("e", "rename", "Rename"),
         ("d", "delete", "Delete"),
         ("i", "install", "Install"),
         ("u", "uninstall", "Uninstall"),
-        ("R", "reveal", "Reveal folder"),
-        ("c", "edit_config", "Edit config.ini"),
-        ("f", "focus_filter", "Filter"),
         ("s", "settings", "Settings"),
-        ("L", "accept_licenses", "Accept licenses"),
-        ("U", "update_all", "Update all"),
-        ("F4", "toggle_log", "Toggle log"),
         ("question_mark", "help", "Help"),
-        ("j", "focus_next_tree", "Next tree"),
-        ("k", "focus_prev_tree", "Previous tree"),
+        Binding("e", "rename", "Rename", show=False),
+        Binding("R", "reveal", "Reveal folder", show=False),
+        Binding("c", "edit_config", "Edit config.ini", show=False),
+        Binding("f", "focus_filter", "Filter", show=False),
+        Binding("L", "accept_licenses", "Accept licenses", show=False),
+        Binding("U", "update_all", "Update all", show=False),
+        Binding("F4", "toggle_log", "Toggle log", show=False),
+        Binding("j", "focus_next_tree", "Next tree", show=False),
+        Binding("k", "focus_prev_tree", "Previous tree", show=False),
     ]
 
     def __init__(self, context: AppContext | None = None) -> None:
@@ -79,10 +82,10 @@ class AvdManagerApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical(id="body"):
+        with Horizontal(id="main"):
             yield Sidebar(id="sidebar")
             yield DetailPane(id="detail")
-            yield LogPane(id="logpane")
+        yield LogPane(id="logpane")
         yield StatusBar(self.ctx.runner, id="statusbar")
         yield Input(placeholder="Filter packages…", id="filter")
         yield Footer()
@@ -168,6 +171,9 @@ class AvdManagerApp(App):
             self._avds = []
         await self.sidebar.set_avds(self._avds)
         self.logpane.push(f"Loaded {len(self._avds)} AVD(s)", "info")
+        if self._avds:
+            # Don't leave the detail pane showing "Loading…".
+            self.show_detail("avd", self._avds[0])
 
     @work(exclusive=False, group="load")
     async def _load_packages(self, pattern: str = "") -> None:
@@ -516,18 +522,18 @@ class AvdManagerApp(App):
     def _tree_highlighted(self, event: Tree.NodeHighlighted) -> None:
         node = event.node
         data = node.data if node is not None else None
-        if not isinstance(data, tuple) or len(data) != 2:
-            return
-        kind, payload = data
+        if isinstance(data, tuple) and len(data) == 2:
+            self.show_detail(data[0], data[1])
+
+    def show_detail(self, kind: str, payload) -> None:
+        """Render a node's detail pane."""
         if kind == "avd":
-            avd = payload
-            footer = "enter launch · e rename · d delete · R reveal folder · c config.ini"
-            self.detail.show_rows(avd.name, avd.detail_rows(), footer=footer)
+            footer = "l launch · e rename · d delete · R reveal folder · c config.ini"
+            self.detail.show_rows(payload.name, payload.detail_rows(), footer=footer)
         elif kind == "pkg":
-            pkg = payload
-            footer = "u uninstall" if pkg.installed else "i install"
+            footer = "u uninstall" if payload.installed else "i install"
             self.detail.show_rows(
-                pkg.description or pkg.path, pkg.detail_rows(), footer=footer
+                payload.description or payload.path, payload.detail_rows(), footer=footer
             )
         elif kind == "pkg-group":
             self.detail.show_rows(payload, [("Group", payload)], footer=status_hint())

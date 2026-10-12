@@ -21,9 +21,9 @@ from avdmanager.models import Avd, Package
 #: How many nodes to add before yielding to the event loop.
 BATCH = 60
 
-INSTALLED_ICON = "●"
-AVAILABLE_ICON = "○"
-UPDATE_ICON = "↑"
+INSTALLED_ICON = "[*]"
+AVAILABLE_ICON = "[ ]"
+UPDATE_ICON = "[!]"
 
 
 class Selected(Message):
@@ -96,6 +96,9 @@ class Sidebar(Vertical):
             return
         for avd in avds:
             tree.root.add_leaf(f"{INSTALLED_ICON} {avd.name}", data=("avd", avd))
+        if avds:
+            tree.root.children[0].expand()
+            tree.move_cursor(tree.root.children[0])
         await asyncio.sleep(0)
 
     def set_avds_placeholder(self, message: str = "Loading…") -> None:
@@ -181,7 +184,7 @@ async def _populate(tree: Tree, packages: list[Package], empty_label: str) -> No
         total = len(group_packages)
         # TreeNode has no class API, so state is encoded in the label markup.
         css = "installed" if installed else "available"
-        count = f'  [class="detail-value"]{installed}/{total}[/]' if installed else ""
+        count = f"   {installed}/{total}" if installed else ""
         node = tree.root.add(f"[{css}]{group_name}[/{css}]{count}", data=("pkg-group", group_name))
 
         count = 0
