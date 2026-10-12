@@ -13,7 +13,7 @@ authors = [{ name = "elliot" }]
 keywords = ["android", "avd", "sdk", "emulator", "tui", "terminal"]
 dependencies = [
     "textual>=0.80",
-    "tomli-w>=1.0; python_version < '3.11'",
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]
