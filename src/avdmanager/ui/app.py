@@ -29,7 +29,7 @@ from avdmanager.ui.dialogs import (
     TypeToConfirmModal,
 )
 from avdmanager.ui.logpane import LogPane
-from avdmanager.ui.sidebar import Sidebar
+from avdmanager.ui.sidebar import COLLAPSED_GLYPH, EXPANDED_GLYPH, Sidebar
 from avdmanager.ui.splitter import Splitter
 from avdmanager.ui.statusbar import StatusBar
 
@@ -121,13 +121,16 @@ class AvdManagerApp(App):
                 id="sidebar-splitter",
             )
             yield DetailPane(id="detail")
-        # The log's divider sits *above* the pane it resizes. Anchoring it
-        # below would leave it only the status-bar and footer rows to travel
-        # into, so the log could be shrunk by dragging but never grown.
+        # The log's divider sits *above* the pane it resizes and carries the
+        # pane's header, so one bar both resizes it (drag) and collapses it
+        # (click). Anchoring the bar below the pane would leave it only the
+        # status-bar and footer rows to travel into.
         yield Splitter(
             "horizontal",
+            label=_log_label(self.ctx.config.log_visible),
             on_drag=self._on_log_drag,
             on_commit=self._persist_layout,
+            on_click=self.action_toggle_log,
             id="log-splitter",
         )
         yield LogPane(id="logpane")
@@ -291,28 +294,28 @@ class AvdManagerApp(App):
         self._load_packages(self._pending_filter)
 
     def action_focus_next_tree(self) -> None:
-        self.sidebar.focus_tree(self._tree_index() + 1)
+        self.sidebar.focus_next_tree()
 
     def action_focus_prev_tree(self) -> None:
-        self.sidebar.focus_tree(self._tree_index() - 1)
-
-    def _tree_index(self) -> int:
-        trees = self.sidebar.trees
-        for index, tree in enumerate(trees):
-            if tree.has_focus:
-                return index
-        return 0
+        self.sidebar.focus_prev_tree()
 
     def action_toggle_log(self) -> None:
-        self.logpane.toggle()
-        self.ctx.config.log_visible = not self.logpane.has_class("-hidden")
-        self._sync_log_chrome()
+        self.ctx.config.log_visible = not self.ctx.config.log_visible
+        self._apply_log_visibility()
         self._persist_layout()
 
-    def _sync_log_chrome(self) -> None:
-        """Hide the log's divider along with the pane it controls."""
-        hidden = self.logpane.has_class("-hidden")
-        self.query_one("#log-splitter", Splitter).display = not hidden
+    def _apply_log_visibility(self) -> None:
+        """Collapse the log to its header bar, or restore it to its stored height.
+
+        The header lives on the divider, so the divider stays put while the
+        pane itself is hidden -- one bar serves both the resize and the
+        collapse, and clicking it again brings the log back.
+        """
+        visible = self.ctx.config.log_visible
+        self.logpane.set_hidden(not visible)
+        self.query_one("#log-splitter", Splitter).set_label(_log_label(visible))
+        if visible:
+            self.logpane.styles.height = self.ctx.config.log_height
 
     def action_focus_filter(self) -> None:
         widget = self.filter_input
@@ -720,8 +723,7 @@ class AvdManagerApp(App):
         self.set_log_height(
             _sanitise(config.log_height, LOG_MIN, LOG_MAX, DEFAULT_LOG_HEIGHT)
         )
-        self.logpane.set_class(not config.log_visible, "-hidden")
-        self._sync_log_chrome()
+        self._apply_log_visibility()
 
     @property
     def sidebar_limit(self) -> int:
@@ -741,20 +743,30 @@ class AvdManagerApp(App):
         return width
 
     def set_log_height(self, height: int) -> int:
-        """Clamp and apply the log height; returns the value used."""
+        """Clamp and apply the log height; returns the value used.
+
+        While the log is collapsed the visual height is pinned to one row, but
+        the remembered height is still updated so expanding restores it.
+        """
         height = max(LOG_MIN, min(height, self.log_limit))
-        self.logpane.styles.height = height
         self.ctx.config.log_height = height
+        if self.ctx.config.log_visible:
+            self.logpane.styles.height = height
         return height
 
     def _on_sidebar_drag(self, delta: int) -> None:
         self.set_sidebar_width(self.ctx.config.sidebar_width + delta)
 
     def _on_log_drag(self, delta: int) -> None:
-        """Dragging the divider down grows the log beneath it."""
+        """Resize the log from its divider.
+
+        The log is anchored to the bottom and its divider sits *above* it, so
+        dragging the divider up grows the log and dragging it down shrinks it --
+        the opposite sign to the sidebar divider.
+        """
         if not self.ctx.config.log_visible:
             return
-        self.set_log_height(self.ctx.config.log_height + delta)
+        self.set_log_height(self.ctx.config.log_height - delta)
 
     def _persist_layout(self) -> None:
         """Write the current pane geometry back to the config file."""
@@ -840,6 +852,12 @@ def _sanitise(value, low: int, high: int, default: int) -> int:
 
 def _is_platform(pkg: Package) -> bool:
     return pkg.category in ("platforms", "system-images", "sources")
+
+
+def _log_label(visible: bool) -> str:
+    """The log divider's header text, carrying the collapse glyph."""
+    glyph = EXPANDED_GLYPH if visible else COLLAPSED_GLYPH
+    return f"{glyph} Output"
 
 
 def _validate_new_name(name: str, current: str, avds: list[Avd]) -> str | None:

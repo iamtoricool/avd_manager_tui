@@ -5,15 +5,15 @@ successor to the [`vscode-avdmanager`](https://github.com/toroxx/vscode-avdmanag
 VS Code extension.
 
 ```
-┌ AVD Manager ───────────────────────────────────────────────────────────┐
+┌ AVD Manager ───────────────────────────────────────────────────────────-┐
 │ AVDS            │ Pixel_36_Ultra                                        │
 │ [*] Pixel_36…   │ Based on: Android 16.0 ("Baklava")                    │
-│                 │ Tag/ABI: google_apis_playstore/x86_64                  │
+│                 │ Tag/ABI: google_apis_playstore/x86_64                 │
 │ SDK PLATFORMS   │ Path:    ~/.android/avd/Pixel_36_Ultra.avd            │
-│ Android 16 (B…  │                                                        │
-│ SDK TOOLS       │                                                        │
-│ build-tools 3/82│                                                        │
-├─────────────────┴──────────────────────────────────────────────────────┤
+│ Android 16 (B…  │                                                       │
+│ SDK TOOLS       │                                                       │
+│ build-tools 3/82│                                                       │
+├─────────────────┴─────────────────────────────────────-─────────────────┤
 │ Output   Loading packages…  Loaded 636 packages (13 installed)          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ backend: android CLI   SDK: ok                                          │
@@ -88,8 +88,20 @@ the detail pane and app chrome. Shrinking the terminal re-clamps the panes.
 A nonsensical stored value falls back to the default rather than pinning the
 pane to a bound.
 
-Both dividers are draggable in both directions; the log's divider sits *above*
-the log, so it can be dragged down to grow it as well as up to shrink it.
+Both dividers are draggable in both directions; the log is anchored to the
+bottom and its divider sits *above* it, so drag that divider **up** to grow the
+log and **down** to shrink it.
+
+The three sidebar sections — **AVDS**, **SDK PLATFORMS** and **SDK TOOLS** —
+are collapsible: **click a section heading** to hide its tree so the other
+sections grow into the freed rows, and click again to restore it. The heading
+shows `▼` when expanded and `▶` when collapsed, and the sections collapse
+independently (any combination, including all three).
+
+The **Output** pane has a single bar along its top that does both jobs: **drag
+it** to resize the log, or **click it** (or press `F4`) to collapse the pane
+down to just that bar. The bar stays on screen while collapsed, so the same
+click brings the log back.
 
 ## Keys
 

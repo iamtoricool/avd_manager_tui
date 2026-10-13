@@ -18,7 +18,13 @@ from avdmanager.services.avd import AvdService
 from avdmanager.ui.app import AvdManagerApp
 from avdmanager.ui.dialogs.base import ConfirmModal
 from avdmanager.ui.logpane import LogPane
-from avdmanager.ui.sidebar import AVAILABLE_ICON, INSTALLED_ICON, Sidebar
+from avdmanager.ui.sidebar import (
+    AVAILABLE_ICON,
+    COLLAPSED_GLYPH,
+    EXPANDED_GLYPH,
+    INSTALLED_ICON,
+    Sidebar,
+)
 
 AVD_TEXT = """Available Android Virtual Devices:
     Name: Pixel_36_Ultra
@@ -170,6 +176,102 @@ async def test_three_trees_are_present(app):
         assert isinstance(tree, Tree)
 
 
+# --------------------------------------------------------------------------- #
+# Collapsible sections
+# --------------------------------------------------------------------------- #
+
+
+async def test_section_headers_are_present(app):
+    instance, _pilot = app
+    for key, title in (
+        ("avds", "AVDS"),
+        ("platforms", "SDK PLATFORMS"),
+        ("tools", "SDK TOOLS"),
+    ):
+        header = instance.sidebar.section(key)
+        assert header is not None
+        assert title in str(header.content)
+        assert EXPANDED_GLYPH in str(header.content)
+
+
+async def test_tree_roots_are_hidden(app):
+    instance, _pilot = app
+    for tree in instance.sidebar.trees:
+        assert tree.show_root is False
+
+
+async def test_clicking_a_section_header_collapses_its_tree(app):
+    instance, pilot = app
+    sidebar = instance.sidebar
+    header = sidebar.section("platforms")
+    assert sidebar.platforms_tree.display is True
+
+    await pilot.click(header)
+
+    assert header.collapsed is True
+    assert sidebar.platforms_tree.display is False
+    # The header itself stays on screen as the way back.
+    assert header.display is True
+    assert COLLAPSED_GLYPH in str(header.content)
+
+    await pilot.click(header)
+
+    assert header.collapsed is False
+    assert sidebar.platforms_tree.display is True
+    assert EXPANDED_GLYPH in str(header.content)
+
+
+async def test_sections_collapse_independently(app):
+    instance, _pilot = app
+    sidebar = instance.sidebar
+    sidebar.toggle_section("avds")
+    sidebar.toggle_section("tools")
+    assert sidebar.avd_tree.display is False
+    assert sidebar.tools_tree.display is False
+    assert sidebar.platforms_tree.display is True
+    assert sidebar.section_collapsed("avds") is True
+    assert sidebar.section_collapsed("platforms") is False
+
+
+async def test_collapsing_a_section_grows_the_others(app):
+    """The whole point: a hidden pane hands its rows to the visible ones."""
+    instance, pilot = app
+    sidebar = instance.sidebar
+    await pilot.pause()
+    before = sidebar.tools_tree.size.height
+
+    sidebar.toggle_section("platforms")
+    await pilot.pause()
+
+    assert sidebar.tools_tree.size.height > before
+    assert sidebar.platforms_tree.size.height == 0
+
+
+async def test_focus_skips_collapsed_sections(app):
+    instance, pilot = app
+    sidebar = instance.sidebar
+    sidebar.toggle_section("platforms")
+    sidebar.avd_tree.focus()
+    await pilot.pause()
+    assert sidebar.avd_tree.has_focus
+
+    sidebar.focus_next_tree()
+    await pilot.pause()
+    assert sidebar.tools_tree.has_focus
+
+
+async def test_collapsing_the_focused_tree_moves_focus(app):
+    instance, pilot = app
+    sidebar = instance.sidebar
+    sidebar.platforms_tree.focus()
+    await pilot.pause()
+    assert sidebar.platforms_tree.has_focus
+
+    sidebar.toggle_section("platforms")
+    await pilot.pause()
+    assert sidebar.tools_tree.has_focus
+
+
 async def test_log_toggles(app):
     instance, pilot = app
     log = instance.query_one("#logpane", LogPane)
@@ -243,7 +345,6 @@ async def test_selecting_avd_shows_detail(app):
     instance, pilot = app
     tree = instance.sidebar.avd_tree
     tree.focus()
-    await pilot.press("down")
     await pilot.pause()
     from textual.widgets import Static
 
@@ -458,7 +559,6 @@ async def test_reveal_action_awaits_the_opener(app, monkeypatch):
 
     instance, pilot = app
     instance.sidebar.avd_tree.focus()
-    await pilot.press("down")
     await pilot.pause()
 
     await instance.action_reveal()
@@ -484,7 +584,6 @@ async def test_edit_config_uses_editor_when_available(app, monkeypatch):
 
     instance, pilot = app
     instance.sidebar.avd_tree.focus()
-    await pilot.press("down")
     await pilot.pause()
 
     await instance.action_edit_config()
@@ -510,7 +609,6 @@ async def test_edit_config_falls_back_to_the_desktop_opener(app, monkeypatch):
 
     instance, pilot = app
     instance.sidebar.avd_tree.focus()
-    await pilot.press("down")
     await pilot.pause()
 
     await instance.action_edit_config()
@@ -685,19 +783,19 @@ async def test_dragging_the_vertical_splitter_narrows_the_sidebar(app):
 
 
 async def test_dragging_the_horizontal_splitter_resizes_the_log(app):
-    """The divider sits below the log, so dragging it down grows the log."""
+    """The divider sits above the bottom-anchored log, so dragging it up grows it."""
     from avdmanager.ui.splitter import Splitter
 
     instance, pilot = app
     splitter = instance.query_one("#log-splitter", Splitter)
-    # start small so there is room below the divider to drag into
+    # start small so there is room to drag into
     instance.set_log_height(10)
     await pilot.pause()
 
-    await _drag(pilot, splitter, dy=+5)
+    await _drag(pilot, splitter, dy=-5)
     assert instance.ctx.config.log_height == 15
 
-    await _drag(pilot, splitter, dy=-5)
+    await _drag(pilot, splitter, dy=+5)
     assert instance.ctx.config.log_height == 10
 
 
@@ -857,12 +955,17 @@ async def _drag(pilot, splitter, dx: int = 0, dy: int = 0):
     )
 
 
-async def test_horizontal_drag_grows_the_log(app):
+async def test_horizontal_drag_resizes_the_log(app):
+    """Dragging the divider up grows the log; dragging it down shrinks it."""
     instance, pilot = app
     start = instance.ctx.config.log_height
-    instance._on_log_drag(4)
+    instance._on_log_drag(-4)
     await pilot.pause()
     assert instance.ctx.config.log_height == start + 4
+
+    instance._on_log_drag(4)
+    await pilot.pause()
+    assert instance.ctx.config.log_height == start
 
 
 async def test_horizontal_drag_is_ignored_while_the_log_is_hidden(app):
@@ -893,20 +996,50 @@ async def test_growing_the_log_unhides_it(app):
     assert not instance.logpane.has_class("-hidden")
 
 
-async def test_log_splitter_hides_with_the_log(app):
+async def test_log_divider_stays_visible_when_collapsed(app):
+    """One bar: the divider is the header, so it survives the collapse."""
     from avdmanager.ui.splitter import Splitter
 
     instance, pilot = app
     splitter = instance.query_one("#log-splitter", Splitter)
     assert splitter.display is True
+    assert EXPANDED_GLYPH in str(splitter.content)
 
     instance.action_toggle_log()
     await pilot.pause()
-    assert splitter.display is False
 
-    instance.action_toggle_log()
-    await pilot.pause()
+    assert instance.logpane.has_class("-hidden")
     assert splitter.display is True
+    assert COLLAPSED_GLYPH in str(splitter.content)
+
+    instance.action_toggle_log()
+    await pilot.pause()
+    assert not instance.logpane.has_class("-hidden")
+    assert splitter.display is True
+    assert EXPANDED_GLYPH in str(splitter.content)
+
+
+async def test_clicking_the_log_divider_collapses_the_pane(app):
+    """A click with no drag on the single bar collapses; another restores."""
+    from avdmanager.ui.splitter import Splitter
+
+    instance, pilot = app
+    splitter = instance.query_one("#log-splitter", Splitter)
+    assert not instance.logpane.has_class("-hidden")
+
+    await pilot.click(splitter)
+    await pilot.pause()
+
+    assert instance.logpane.has_class("-hidden")
+    assert COLLAPSED_GLYPH in str(splitter.content)
+    # the bar stays put so the same gesture restores the log
+    assert splitter.display is True
+
+    await pilot.click(splitter)
+    await pilot.pause()
+
+    assert not instance.logpane.has_class("-hidden")
+    assert instance.logpane.styles.height.value == instance.ctx.config.log_height
 
 
 async def test_resized_layout_is_restored_on_startup(stub_context):

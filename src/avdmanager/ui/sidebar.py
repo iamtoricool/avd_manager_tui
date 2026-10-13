@@ -27,6 +27,10 @@ UPDATE_ICON = "[!]"
 MARK_ICON = ">"
 RUNNING_ICON = "[>]"
 
+#: Section header glyphs, matching Textual's own collapsible convention.
+EXPANDED_GLYPH = "▼"
+COLLAPSED_GLYPH = "▶"
+
 
 class Selected(Message):
     """Emitted when the user highlights a node in any tree."""
@@ -35,6 +39,48 @@ class Selected(Message):
         super().__init__()
         self.kind = kind
         self.payload = payload
+
+
+class SectionTitle(Static):
+    """Clickable section header that collapses the tree beneath it.
+
+    Collapsing hides the tree *widget* (rather than just its children, which is
+    what the tree's own root triangle used to do), so the other sections grow
+    into the freed rows. The header itself always stays visible.
+    """
+
+    def __init__(self, title: str, target: Tree, **kwargs) -> None:
+        super().__init__(classes="section-title", **kwargs)
+        self._title = title
+        self._target = target
+        self._collapsed = False
+        self._refresh_label()
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def on_click(self) -> None:
+        self.toggle()
+
+    def toggle(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Collapse or expand the section, moving focus if it is hidden."""
+        was_focused = self._target.has_focus
+        self._collapsed = collapsed
+        self._target.display = not collapsed
+        self.set_class(collapsed, "-collapsed")
+        self._refresh_label()
+        if collapsed and was_focused:
+            parent = self.parent
+            if isinstance(parent, Sidebar):
+                parent.focus_after(self._target)
+
+    def _refresh_label(self) -> None:
+        glyph = COLLAPSED_GLYPH if self._collapsed else EXPANDED_GLYPH
+        self.update(f"{glyph} {self._title}")
 
 
 class Sidebar(Vertical):
@@ -55,16 +101,27 @@ class Sidebar(Vertical):
         self._marked: set[str] = set()
         #: AVD names with a live emulator.
         self._running_avds: set[str] = set()
+        # The trees are created up front so the section headers can target
+        # them. The empty root row is hidden -- the header is the collapse
+        # control now, not the tree's own triangle.
+        self._avd_tree = Tree("", id="avd-tree")
+        self._platforms_tree = Tree("", id="platforms-tree")
+        self._tools_tree = Tree("", id="tools-tree")
+        for tree in (self._avd_tree, self._platforms_tree, self._tools_tree):
+            tree.show_root = False
+        #: Section key -> its clickable header.
+        self._sections: dict[str, SectionTitle] = {}
 
     def compose(self) -> ComposeResult:
-        yield Static("AVDS", classes="section-title")
-        yield Tree("", id="avd-tree")
-
-        yield Static("SDK PLATFORMS", classes="section-title")
-        yield Tree("", id="platforms-tree")
-
-        yield Static("SDK TOOLS", classes="section-title")
-        yield Tree("", id="tools-tree")
+        for key, title, tree in (
+            ("avds", "AVDS", self._avd_tree),
+            ("platforms", "SDK PLATFORMS", self._platforms_tree),
+            ("tools", "SDK TOOLS", self._tools_tree),
+        ):
+            section = SectionTitle(title, tree, id=f"section-{key}")
+            self._sections[key] = section
+            yield section
+            yield tree
 
     # ------------------------------------------------------------------ #
     # Trees
@@ -72,24 +129,78 @@ class Sidebar(Vertical):
 
     @property
     def avd_tree(self) -> Tree:
-        return self.query_one("#avd-tree", Tree)
+        return self._avd_tree
 
     @property
     def platforms_tree(self) -> Tree:
-        return self.query_one("#platforms-tree", Tree)
+        return self._platforms_tree
 
     @property
     def tools_tree(self) -> Tree:
-        return self.query_one("#tools-tree", Tree)
+        return self._tools_tree
 
     @property
     def trees(self) -> tuple[Tree, Tree, Tree]:
-        return (self.avd_tree, self.platforms_tree, self.tools_tree)
+        return (self._avd_tree, self._platforms_tree, self._tools_tree)
 
     def focus_tree(self, index: int) -> None:
+        """Focus the tree at ``index`` when it is visible."""
         trees = self.trees
-        if 0 <= index < len(trees):
+        if 0 <= index < len(trees) and trees[index].display:
             trees[index].focus()
+
+    def focus_next_tree(self) -> None:
+        """Focus the next visible tree, skipping collapsed sections."""
+        self._focus_step(1)
+
+    def focus_prev_tree(self) -> None:
+        """Focus the previous visible tree, skipping collapsed sections."""
+        self._focus_step(-1)
+
+    def focus_after(self, tree: Tree) -> None:
+        """Focus the nearest visible tree after ``tree`` (used on collapse)."""
+        trees = self.trees
+        start = trees.index(tree)
+        for index in range(start + 1, len(trees)):
+            if trees[index].display:
+                trees[index].focus()
+                return
+        for index in range(start - 1, -1, -1):
+            if trees[index].display:
+                trees[index].focus()
+                return
+
+    def _focus_step(self, direction: int) -> None:
+        trees = self.trees
+        current = next((i for i, tree in enumerate(trees) if tree.has_focus), None)
+        if current is None:
+            first = next((tree for tree in trees if tree.display), None)
+            if first is not None:
+                first.focus()
+            return
+        index = current + direction
+        while 0 <= index < len(trees):
+            if trees[index].display:
+                trees[index].focus()
+                return
+            index += direction
+
+    # ------------------------------------------------------------------ #
+    # Sections
+    # ------------------------------------------------------------------ #
+
+    def section(self, key: str) -> SectionTitle | None:
+        """The clickable header for a section (``avds``/``platforms``/``tools``)."""
+        return self._sections.get(key)
+
+    def toggle_section(self, key: str) -> None:
+        section = self._sections.get(key)
+        if section is not None:
+            section.toggle()
+
+    def section_collapsed(self, key: str) -> bool:
+        section = self._sections.get(key)
+        return bool(section and section.collapsed)
 
     # ------------------------------------------------------------------ #
     # AVDs

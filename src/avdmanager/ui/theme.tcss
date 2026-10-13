@@ -20,6 +20,15 @@ Screen {
     background: $panel;
 }
 
+.section-title:hover {
+    color: $text;
+    background: $panel-lighten-1;
+}
+
+.section-title.-collapsed {
+    color: $text-disabled;
+}
+
 .section-title.-active {
     color: $accent;
 }
@@ -148,14 +157,6 @@ Screen {
     height: 1fr;
     border: none;
     background: $boost;
-}
-
-#log-title {
-    dock: top;
-    height: 1;
-    padding: 0 1;
-    background: $panel;
-    color: $text-muted;
 }
 
 .log-line-out {
