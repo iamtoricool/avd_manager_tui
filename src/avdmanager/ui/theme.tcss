@@ -30,7 +30,8 @@ Screen {
 }
 
 .section-title.-active {
-    color: $accent;
+    color: $text;
+    background: $accent 50%;
 }
 
 #main {

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable, Iterator
 
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -60,6 +61,11 @@ class SectionTitle(Static):
     def collapsed(self) -> bool:
         return self._collapsed
 
+    @property
+    def target(self) -> Tree:
+        """The tree this header collapses and whose focus it reflects."""
+        return self._target
+
     def on_click(self) -> None:
         self.toggle()
 
@@ -88,9 +94,9 @@ class Sidebar(Vertical):
 
     DEFAULT_CSS = """
     Sidebar { width: 42; min-width: 24; }
-    Sidebar Tree { height: 1fr; min-height: 4; border: none; padding: 0 1;
+    Sidebar Tree { height: 1fr; min-height: 4; border: none; padding: 0 1 0 3;
                    background: transparent; }
-    Sidebar Tree:focus { border: none; }
+    Sidebar Tree:focus { border: none; background: $panel; }
     Sidebar > .section-title { height: 1; padding: 0 1; color: $text-muted;
                                text-style: bold; background: $panel; }
     """
@@ -149,6 +155,13 @@ class Sidebar(Vertical):
         if 0 <= index < len(trees) and trees[index].display:
             trees[index].focus()
 
+    def focus_first(self) -> None:
+        """Focus the first visible tree (used when leaving the filter box)."""
+        for tree in self.trees:
+            if tree.display:
+                tree.focus()
+                return
+
     def focus_next_tree(self) -> None:
         """Focus the next visible tree, skipping collapsed sections."""
         self._focus_step(1)
@@ -201,6 +214,29 @@ class Sidebar(Vertical):
     def section_collapsed(self, key: str) -> bool:
         section = self._sections.get(key)
         return bool(section and section.collapsed)
+
+    # ------------------------------------------------------------------ #
+    # Focus
+    # ------------------------------------------------------------------ #
+
+    def active_section(self) -> SectionTitle | None:
+        """The header of the focused section, if any."""
+        focused = self._focused_tree()
+        return next((s for s in self._sections.values() if s.target is focused), None)
+
+    @on(events.DescendantFocus)
+    def _descendant_focused(self, event: events.DescendantFocus) -> None:
+        self._highlight_section(event.widget)
+
+    @on(events.DescendantBlur)
+    def _descendant_blurred(self, event: events.DescendantBlur) -> None:
+        # Focus may already have moved on, so recompute from the live target.
+        self._highlight_section(self._focused_tree())
+
+    def _highlight_section(self, tree) -> None:
+        """Mark the header of the focused section, and only that one."""
+        for section in self._sections.values():
+            section.set_class(section.target is tree, "-active")
 
     # ------------------------------------------------------------------ #
     # AVDs

@@ -272,6 +272,42 @@ async def test_collapsing_the_focused_tree_moves_focus(app):
     assert sidebar.tools_tree.has_focus
 
 
+async def test_focused_section_header_is_highlighted(app):
+    instance, pilot = app
+    sidebar = instance.sidebar
+
+    sidebar.avd_tree.focus()
+    await pilot.pause()
+    assert sidebar.section("avds").has_class("-active")
+    assert not sidebar.section("platforms").has_class("-active")
+    assert not sidebar.section("tools").has_class("-active")
+
+    sidebar.platforms_tree.focus()
+    await pilot.pause()
+    assert sidebar.section("platforms").has_class("-active")
+    assert not sidebar.section("avds").has_class("-active")
+    assert not sidebar.section("tools").has_class("-active")
+
+    sidebar.tools_tree.focus()
+    await pilot.pause()
+    assert sidebar.section("tools").has_class("-active")
+    assert sidebar.active_section() is sidebar.section("tools")
+
+
+async def test_active_section_clears_when_focus_leaves_the_sidebar(app):
+    instance, pilot = app
+    sidebar = instance.sidebar
+    sidebar.avd_tree.focus()
+    await pilot.pause()
+    assert sidebar.active_section() is sidebar.section("avds")
+
+    instance.filter_input.focus()
+    await pilot.pause()
+
+    assert sidebar.active_section() is None
+    assert not sidebar.section("avds").has_class("-active")
+
+
 async def test_log_toggles(app):
     instance, pilot = app
     log = instance.query_one("#logpane", LogPane)
@@ -391,6 +427,60 @@ async def test_filter_box_hidden_by_default(app):
     assert instance.filter_input.display is False
     instance.action_focus_filter()
     assert instance.filter_input.display is True
+
+
+async def test_escape_dismisses_the_filter(app):
+    instance, pilot = app
+    await pilot.press("f")
+    await pilot.pause()
+    assert instance.filter_input.display is True
+    assert instance.filter_input.has_focus
+
+    await pilot.press("escape")
+    await pilot.pause()
+
+    assert instance.filter_input.display is False
+    # focus returns to the sidebar so the pane keys work again
+    assert instance.sidebar.avd_tree.has_focus
+
+
+async def test_dismissing_the_filter_clears_it(app):
+    instance, pilot = app
+    await pilot.press("f")
+    for ch in "build":
+        await pilot.press(ch)
+    await pilot.pause()
+    assert instance._pending_filter == "build"
+
+    await pilot.press("escape")
+    await pilot.pause()
+
+    assert instance.filter_input.value == ""
+    assert instance._pending_filter == ""
+
+
+async def test_escape_with_filter_focused_does_not_clear_marks(app):
+    instance, pilot = app
+    tree = instance.sidebar.tools_tree
+    tree.focus()
+    tree.root.children[0].expand()
+    for _ in range(4):
+        await pilot.pause(0.05)
+    for _ in range(2):
+        await pilot.press("down")
+        await pilot.pause()
+    await pilot.press("space")
+    await pilot.pause()
+    assert instance.sidebar.mark_count() == 1
+
+    await pilot.press("f")
+    await pilot.pause()
+    await pilot.press("escape")
+    await pilot.pause()
+
+    # Escape dismissed the filter, not the marks
+    assert instance.filter_input.display is False
+    assert instance.sidebar.mark_count() == 1
 
 
 # --------------------------------------------------------------------------- #

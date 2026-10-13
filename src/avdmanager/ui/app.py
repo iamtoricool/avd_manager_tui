@@ -6,6 +6,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.message import Message
 from textual.widgets import Footer, Header, Input, Tree
 
 from avdmanager import config as config_mod
@@ -52,6 +53,22 @@ DEFAULT_SIDEBAR_WIDTH, DEFAULT_LOG_HEIGHT = 42, 14
 WIPE_ALL_PHRASE = "WIPE ALL"
 
 CMDLINE_TOOLS_URL = "https://developer.android.com/studio#command-tools"
+
+
+class FilterInput(Input):
+    """Package filter box that can be dismissed with Escape.
+
+    ``Input`` binds no ``escape``, so the binding here wins over the app-level
+    ``escape`` (clear marks) while the filter has focus.
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Dismiss filter", show=False)]
+
+    class Dismissed(Message):
+        """Posted when the user dismisses the filter box."""
+
+    def action_dismiss(self) -> None:
+        self.post_message(self.Dismissed())
 
 
 class AvdManagerApp(App):
@@ -135,7 +152,7 @@ class AvdManagerApp(App):
         )
         yield LogPane(id="logpane")
         yield StatusBar(self.ctx.runner, id="statusbar")
-        yield Input(placeholder="Filter packages…", id="filter")
+        yield FilterInput(placeholder="Filter packages…  (Esc to dismiss)", id="filter")
         yield Footer()
 
     # ------------------------------------------------------------------ #
@@ -192,8 +209,8 @@ class AvdManagerApp(App):
         return self.query_one("#statusbar", StatusBar)
 
     @property
-    def filter_input(self) -> Input:
-        return self.query_one("#filter", Input)
+    def filter_input(self) -> FilterInput:
+        return self.query_one("#filter", FilterInput)
 
     @property
     def ready(self) -> bool:
@@ -321,6 +338,18 @@ class AvdManagerApp(App):
         widget = self.filter_input
         widget.display = True
         widget.focus()
+
+    def action_dismiss_filter(self) -> None:
+        """Hide the filter box and drop any active filter.
+
+        Clearing the value fires ``Input.Changed``, which reloads the full
+        package list through the normal (debounced) path.
+        """
+        widget = self.filter_input
+        widget.value = ""
+        widget.display = False
+        self._pending_filter = ""
+        self.sidebar.focus_first()
 
     def action_help(self) -> None:
         self.say(_HELP_TEXT, seconds=10)
@@ -837,6 +866,10 @@ class AvdManagerApp(App):
         # cheap, but a fast typist would still spawn a process per keystroke.
         self._filter_timer = self.set_timer(FILTER_DEBOUNCE, self._apply_filter)
 
+    @on(FilterInput.Dismissed)
+    def _filter_dismissed(self, event: FilterInput.Dismissed) -> None:
+        self.action_dismiss_filter()
+
     def _apply_filter(self) -> None:
         self._load_packages(self._pending_filter)
 
@@ -880,8 +913,8 @@ def _default_runner():
 _HELP_TEXT = (
     "AVDS: n new · l launch · x stop · w wipe · W wipe all · e rename · d delete · "
     "R reveal · c config.ini\n"
-    "PACKAGES: space mark · i install marked · u uninstall marked · f filter · "
-    "esc clear marks\n"
+    "PACKAGES: space mark · i install marked · u uninstall marked · f filter "
+    "(Esc dismisses) · esc clear marks\n"
     "SDK: L accept licences · U update all · r refresh\n"
     "VIEW: j/k switch tree · [ ] sidebar width · - = log height · F4 toggle log · "
     "s settings · ? this help · q quit · ctrl+c cancel job"

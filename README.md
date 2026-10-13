@@ -117,6 +117,10 @@ click brings the log back.
 | `c` | Edit `config.ini` | | `ctrl+c` | Cancel the running job |
 | `j` / `k` | Switch tree | | `q` | Quit |
 
+`f` opens the package filter box; press `Esc` while it has focus to dismiss it
+and clear the filter (the full list reloads). `Esc` anywhere else clears marked
+packages.
+
 ## Design notes
 
 **Two backends.** The modern `android` CLI (cmdline-tools 23+) is preferred
