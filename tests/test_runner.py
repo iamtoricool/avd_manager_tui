@@ -332,3 +332,63 @@ def test_capture_result_output_prefers_stdout():
     assert result.output == "out"
     empty = r.CaptureResult(argv=["x"], stdout="", stderr="err", returncode=0)
     assert empty.output == "err"
+
+
+# --------------------------------------------------------------------------- #
+# PTY streaming
+#
+# The android CLI block-buffers its output when stdout is a pipe and only
+# flushes on exit, so a long install looks silent. Mutation jobs therefore run
+# on a PTY, where the tool line-buffers.
+# --------------------------------------------------------------------------- #
+
+
+def test_strip_ansi():
+    assert r.strip_ansi("\x1b[31mred\x1b[0m text") == "red text"
+    assert r.strip_ansi("plain") == "plain"
+
+
+@pytest.mark.skipif(r.pty is None, reason="PTY is POSIX-only")
+async def test_pty_streams_output_while_the_job_runs():
+    runner = r.JobRunner()
+    # Python line-buffers on a TTY but block-buffers on a pipe, which mirrors
+    # exactly how the SDK tool behaves.
+    code = "import time; print('early'); time.sleep(1.2); print('late')"
+    job = await runner.start([sys.executable, "-c", code], use_pty=True)
+
+    await asyncio.sleep(0.6)
+    assert job.status is r.JobStatus.RUNNING
+    assert any("early" in line.text for line in job.lines)
+
+    await runner.wait(job, timeout=10)
+    assert any("late" in line.text for line in job.lines)
+
+
+@pytest.mark.skipif(r.pty is None, reason="PTY is POSIX-only")
+async def test_pty_emits_in_place_progress_line():
+    """The android CLI writes its download URL as '\\r<url>...' with no newline."""
+    runner = r.JobRunner()
+    code = (
+        "import sys,time;"
+        "sys.stdout.write('\\rhttps://example.test/x.zip...');"
+        "sys.stdout.flush();"
+        "time.sleep(1.2)"
+    )
+    job = await runner.start([sys.executable, "-c", code], use_pty=True)
+
+    await asyncio.sleep(0.6)
+    assert any("x.zip" in line.text for line in job.lines)
+
+    await runner.wait(job, timeout=10)
+
+
+@pytest.mark.skipif(r.pty is None, reason="PTY is POSIX-only")
+async def test_pty_auto_answers_prompts():
+    runner = r.JobRunner()
+    code = (
+        "import sys; sys.stdout.write('Accept? (y/N): '); sys.stdout.flush();"
+        "answer = sys.stdin.readline(); print('got:' + answer.strip())"
+    )
+    job = await runner.start([sys.executable, "-c", code], use_pty=True, answer_text="y")
+    await runner.wait(job, timeout=10)
+    assert any("got:y" in line.text for line in job.lines)

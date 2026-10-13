@@ -145,6 +145,13 @@ into the log on a 100 ms timer, table parsing runs in `asyncio.to_thread`, tree
 population yields every 60 nodes, and mutations are serialised behind a lock
 because `sdkmanager` takes its own.
 
+**Live install output.** The `android` CLI block-buffers its stdout when it is
+not attached to a terminal, so a long install would print nothing at all until
+it finished. Package mutations (install, uninstall, update, licences) are
+therefore run on a pseudo-terminal, where the tool line-buffers and streams its
+progress; reads treat a bare carriage return as a repainted line so progress
+updates show up instead of being held in the buffer.
+
 ## Development
 
 ```bash

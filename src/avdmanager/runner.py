@@ -27,6 +27,13 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+try:  # POSIX only; Windows has no PTY support
+    import pty
+    import termios
+except ImportError:  # pragma: no cover - Windows
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+
 #: Matches the confirmation prompts the Android tools print, e.g.
 #: ``Accept? (y/N):``, ``[no]``, ``[y/N]``, ``[yes/no]``.
 PROMPT_RE = re.compile(
@@ -42,6 +49,51 @@ AnswerCallback = Callable[[], "Awaitable[None]"]
 
 #: Bytes pulled from a stream per read.
 _CHUNK = 4096
+
+#: ANSI control sequences (colours, cursor moves) emitted by TTY-aware tools.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from tool output."""
+    return _ANSI_RE.sub("", text)
+
+
+class _LineSplitter:
+    """Split a byte stream into lines, treating CR and LF as terminators.
+
+    Bare ``\\r`` counts as a terminator because the SDK tools repaint progress
+    bars in place; downstream parsers collapse those redraws.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._after_cr = False
+
+    def feed(self, text: str) -> list[str]:
+        self._buffer += text.replace("\r\n", "\n")
+        out: list[str] = []
+        start = 0
+        last_sep: str | None = None
+        for index, char in enumerate(self._buffer):
+            if char == "\r" or char == "\n":
+                out.append(self._buffer[start:index].rstrip())
+                start = index + 1
+                last_sep = char
+        if last_sep is not None:
+            self._after_cr = last_sep == "\r"
+        self._buffer = self._buffer[start:]
+        return out
+
+    @property
+    def pending(self) -> str:
+        """Text after the last terminator, not yet emitted."""
+        return self._buffer
+
+    @property
+    def after_cr(self) -> bool:
+        """True when ``pending`` is a line being repainted in place."""
+        return self._after_cr
 
 
 async def pump_stream(
@@ -59,35 +111,103 @@ async def pump_stream(
     if stream is None:
         return
 
-    buffer = ""
+    splitter = _LineSplitter()
     last_prompt = ""
-
-    def take(chunk: str) -> list[str]:
-        """Split newly-arrived text into complete segments plus a remainder."""
-        nonlocal buffer
-        buffer += chunk.replace("\r\n", "\n")
-        # Treat bare \r as a terminator too: avdmanager repaints a progress bar
-        # in place. Downstream parsers collapse those redraws.
-        parts = buffer.replace("\r", "\n").split("\n")
-        buffer = parts.pop() if parts else ""
-        return [p.rstrip() for p in parts]
 
     while True:
         chunk = await stream.read(_CHUNK)
         if not chunk:
             break
-        for line in take(chunk.decode("utf-8", errors="replace")):
+        for line in splitter.feed(chunk.decode("utf-8", errors="replace")):
             if line:
                 emit(line)
             if answer and PROMPT_RE.search(line):
                 await answer()
         # A prompt may be sitting in the partial tail with no newline yet.
-        if answer and buffer and PROMPT_RE.search(buffer) and buffer != last_prompt:
-            last_prompt = buffer
-            await answer()
+        if answer and splitter.pending and PROMPT_RE.search(splitter.pending):
+            if splitter.pending != last_prompt:
+                last_prompt = splitter.pending
+                await answer()
 
-    if buffer:
-        emit(buffer.rstrip())
+    if splitter.pending:
+        emit(splitter.pending.rstrip())
+
+
+async def pump_fd(
+    fd: int,
+    emit: Callable[[str], None],
+    answer: AnswerCallback | None = None,
+) -> None:
+    """Drain a pseudo-terminal master ``fd`` line by line.
+
+    Tools like the ``android`` CLI block-buffer their output when stdout is a
+    pipe and only flush on exit, so a long install shows nothing at all. On a
+    PTY they line-buffer and print progress, which is why mutation jobs use
+    this pump instead of :func:`pump_stream`.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    def readable() -> None:
+        try:
+            data = os.read(fd, _CHUNK)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            data = b""
+        if data:
+            queue.put_nowait(data)
+        else:
+            with contextlib.suppress(Exception):
+                loop.remove_reader(fd)
+            queue.put_nowait(None)
+
+    loop.add_reader(fd, readable)
+    splitter = _LineSplitter()
+    last_prompt = ""
+    last_current = ""
+
+    try:
+        while True:
+            data = await queue.get()
+            if data is None:
+                break
+            text = strip_ansi(data.decode("utf-8", errors="replace"))
+            for line in splitter.feed(text):
+                if line:
+                    emit(line)
+                    last_current = ""
+                if answer and PROMPT_RE.search(line):
+                    await answer()
+            if answer and splitter.pending and PROMPT_RE.search(splitter.pending):
+                if splitter.pending != last_prompt:
+                    last_prompt = splitter.pending
+                    await answer()
+            # The android CLI writes its download URL as "\r<url>..." with no
+            # newline, repainting a single line. Emit that live line as it
+            # changes so a long install is not silent.
+            current = splitter.pending
+            if splitter.after_cr and current and current != last_current:
+                last_current = current
+                emit(current)
+        if splitter.pending and splitter.pending != last_current:
+            emit(splitter.pending.rstrip())
+    finally:
+        with contextlib.suppress(Exception):
+            loop.remove_reader(fd)
+
+
+def _quiet_pty(slave_fd: int) -> None:
+    """Stop the terminal echoing our auto-answers back into the log."""
+    if termios is None:
+        return
+    try:
+        attrs = termios.tcgetattr(slave_fd)
+    except termios.error:  # pragma: no cover - defensive
+        return
+    attrs[3] &= ~termios.ECHO
+    with contextlib.suppress(termios.error):  # pragma: no cover - defensive
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
 
 
 class JobStatus(StrEnum):
@@ -218,11 +338,14 @@ class JobRunner:
         env: dict[str, str] | None = None,
         on_line: LineCallback | None = None,
         timeout: float | None = None,
+        use_pty: bool = False,
     ) -> Job:
         """Spawn ``argv`` in the background and return immediately.
 
         The returned job is already tracked; use ``await runner.wait(job)`` to
-        await completion.
+        await completion. ``use_pty`` runs the child on a pseudo-terminal so
+        tools that block-buffer when piped (the ``android`` CLI) emit output
+        live instead of all at once on exit.
         """
         argv = [str(a) for a in argv]
         self._counter += 1
@@ -241,7 +364,11 @@ class JobRunner:
 
         job.status = JobStatus.RUNNING
         job.started_at = time.monotonic()
-        job.write("$ " + " ".join(argv), "info")
+        command_line = "$ " + " ".join(argv)
+        job.write(command_line, "info")
+        emit = on_line or self._on_line
+        if emit:
+            emit(command_line, "info")
 
         coro = self._supervise(
             job,
@@ -250,6 +377,7 @@ class JobRunner:
             env=env,
             on_line=on_line,
             timeout=timeout,
+            use_pty=use_pty,
         )
         # Fire and forget; completion is signalled through job._done.
         asyncio.create_task(coro, name=f"job-{job.id}")
@@ -264,8 +392,10 @@ class JobRunner:
         env: dict[str, str] | None,
         on_line: LineCallback | None,
         timeout: float | None,
+        use_pty: bool = False,
     ) -> None:
         acquired = False
+        use_pty = use_pty and pty is not None
         try:
             if job.mutation:
                 # sdkmanager serialises internally; running two at once just
@@ -278,27 +408,47 @@ class JobRunner:
             if env:
                 process_env.update(env)
 
+            master_fd = -1
+            slave_fd = -1
+            if use_pty:
+                master_fd, slave_fd = pty.openpty()
+                _quiet_pty(slave_fd)
+                stdio = {"stdin": slave_fd, "stdout": slave_fd, "stderr": slave_fd}
+            else:
+                stdio = {
+                    "stdin": asyncio.subprocess.PIPE,
+                    "stdout": asyncio.subprocess.PIPE,
+                    "stderr": asyncio.subprocess.PIPE,
+                }
+
             try:
                 process = await asyncio.create_subprocess_exec(
                     *job.argv,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    stdin=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env=process_env,
                     start_new_session=True,
+                    **stdio,
                 )
             except (OSError, ValueError) as exc:
+                if use_pty:
+                    os.close(master_fd)
+                    os.close(slave_fd)
                 job.error = str(exc)
                 job.status = JobStatus.FAILED
                 job.write(f"failed to start: {exc}", "err")
                 return
+            if use_pty:
+                os.close(slave_fd)
             job.process = process
 
             emit = on_line or self._on_line
 
             async def answer() -> None:
-                await self._answer_prompt(job, answer_text or "y\n")
+                payload = answer_text or "y\n"
+                if use_pty:
+                    await self._answer_fd(master_fd, payload)
+                else:
+                    await self._answer_prompt(job, payload)
 
             def sink(kind: str) -> Callable[[str], None]:
                 def _sink(line: str) -> None:
@@ -311,16 +461,24 @@ class JobRunner:
             def answer_cb() -> Awaitable[None] | None:
                 return answer if answer_text is not None else None
 
-            pumps = [
-                asyncio.create_task(
-                    pump_stream(process.stdout, sink("out"), answer_cb()),
-                    name=f"job-{job.id}-stdout",
-                ),
-                asyncio.create_task(
-                    pump_stream(process.stderr, sink("err"), answer_cb()),
-                    name=f"job-{job.id}-stderr",
-                ),
-            ]
+            if use_pty:
+                pumps = [
+                    asyncio.create_task(
+                        pump_fd(master_fd, sink("out"), answer_cb()),
+                        name=f"job-{job.id}-pty",
+                    )
+                ]
+            else:
+                pumps = [
+                    asyncio.create_task(
+                        pump_stream(process.stdout, sink("out"), answer_cb()),
+                        name=f"job-{job.id}-stdout",
+                    ),
+                    asyncio.create_task(
+                        pump_stream(process.stderr, sink("err"), answer_cb()),
+                        name=f"job-{job.id}-stderr",
+                    ),
+                ]
 
             try:
                 job.returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
@@ -330,6 +488,9 @@ class JobRunner:
                 job.status = JobStatus.FAILED
 
             await asyncio.gather(*pumps, return_exceptions=True)
+            if use_pty:
+                with contextlib.suppress(OSError):
+                    os.close(master_fd)
 
             if job.status is JobStatus.RUNNING:
                 if job.returncode == 0:
@@ -361,6 +522,13 @@ class JobRunner:
         with contextlib.suppress(ProcessLookupError, ConnectionResetError, BrokenPipeError):
             process.stdin.write(payload.encode())
             await process.stdin.drain()
+
+    @staticmethod
+    async def _answer_fd(fd: int, answer_text: str) -> None:
+        """Write an auto-answer to a PTY master fd."""
+        payload = answer_text if answer_text.endswith("\n") else answer_text + "\n"
+        with contextlib.suppress(OSError):
+            os.write(fd, payload.encode())
 
     async def wait(self, job: Job, timeout: float | None = None) -> Job:
         """Block until ``job`` finishes."""

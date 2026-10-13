@@ -282,6 +282,18 @@ async def test_sdk_licenses_uses_sdkmanager_even_on_android_backend(paths):
     assert runner.started[0]["argv"] == [paths.sdkmanager, "--licenses"]
 
 
+async def test_sdk_mutations_use_a_pty(paths):
+    """Package operations run on a PTY so the android CLI does not buffer."""
+    runner = FakeRunner()
+    service = make_sdk(runner, paths)
+    await service.install(["build-tools/36.0.0"])
+    await service.remove(["platforms/android-35"])
+    await service.update_all()
+    await service.accept_licenses()
+    assert len(runner.started) == 4
+    assert all(entry["use_pty"] is True for entry in runner.started)
+
+
 async def test_sdk_works_with_legacy_backend(paths):
     runner = FakeRunner()
     service = make_sdk(runner, paths, SdkManagerBackend())

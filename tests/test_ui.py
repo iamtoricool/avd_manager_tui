@@ -1530,6 +1530,81 @@ async def test_wizard_device_selection_is_captured(wizard):
     assert modal._device_id is None
 
 
+async def test_wizard_down_does_not_create_the_avd(wizard):
+    """Regression: Down on the last step submitted the wizard."""
+    from textual.widgets import Input, ListView
+
+    instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+    assert modal._step == 2
+
+    await pilot.press("down")
+    await pilot.pause()
+
+    # Still open, still on the last step, now focused on the device list.
+    assert instance.screen is modal
+    assert modal._step == 2
+    assert modal.query_one("#wizard-devices", ListView).has_focus
+
+
+async def test_wizard_down_advances_from_the_name_step(wizard):
+    from textual.containers import Vertical
+    from textual.widgets import Input
+
+    _instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+
+    await pilot.press("down")
+    await pilot.pause()
+
+    assert modal._step == 1
+    assert modal.query_one("#step-image", Vertical).display is True
+
+
+async def test_wizard_enter_in_the_filter_focuses_the_device_list(wizard):
+    from textual.widgets import Input, ListView
+
+    instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    modal.query_one("#wizard-device", Input).focus()
+    await pilot.pause()
+    await pilot.press("enter")
+    await pilot.pause()
+
+    assert instance.screen is modal
+    assert modal.query_one("#wizard-devices", ListView).has_focus
+
+
+async def test_wizard_selecting_a_device_does_not_create(wizard):
+    from textual.widgets import Input, ListView
+
+    instance, pilot, modal = wizard
+    modal.query_one("#wizard-name", Input).value = "FreshAVD"
+    modal.action_next_or_down()
+    await pilot.pause()
+    modal.action_next_or_down()
+    await pilot.pause()
+
+    view = modal.query_one("#wizard-devices", ListView)
+    view.index = 1
+    modal.on_list_view_selected(
+        type("E", (), {"list_view": view, "item": view.children[1]})()
+    )
+    await pilot.pause()
+
+    assert instance.screen is modal  # not dismissed
+    assert modal._device_id == 0
+
+
 async def test_wizard_with_no_images_warns(wizard_context):
     from avdmanager.ui.dialogs import CreateAvdModal
 

@@ -61,7 +61,7 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
 
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
-        ("down", "next_or_down", "Next"),
+        ("down", "advance", "Next"),
         ("enter", "confirm", "Confirm"),
     ]
 
@@ -238,6 +238,11 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
             self.action_next_or_down()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "wizard-device":
+            # Enter in the filter steps into the device list rather than
+            # creating the AVD.
+            self.query_one("#wizard-devices", ListView).focus()
+            return
         self.action_next_or_down()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -249,20 +254,42 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
             self._sync_device(event.list_view)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_next_or_down()
+        if event.list_view is self.query_one("#wizard-images", ListView):
+            # Picking an image moves on to the hardware profile.
+            self.action_next_or_down()
+        elif event.list_view is self.query_one("#wizard-devices", ListView):
+            # Selecting a device only records it; the Create button submits.
+            self._sync_device(event.list_view)
 
     def action_next_or_down(self) -> None:
+        """The Next/Create button and Enter: advance, or submit on the last step."""
+        if self._step >= 2:
+            self._submit()
+            return
         error = self._advance()
         if error:
             self.query_one("#wizard-error", Static).update(error)
+
+    def action_advance(self) -> None:
+        """The Down arrow: move forward, but never create the AVD.
+
+        On the final step it steps into the hardware-profile list so a stray
+        Down cannot submit the wizard.
+        """
+        if self._step >= 2:
+            self.query_one("#wizard-devices", ListView).focus()
             return
-        if self._step > 2:
-            self.action_confirm()
+        error = self._advance()
+        if error:
+            self.query_one("#wizard-error", Static).update(error)
+
+    def _submit(self) -> None:
+        """Collect the last field and dismiss with the result."""
+        self._sdcard = self.query_one("#wizard-sdcard", Input).value.strip()
+        self.action_confirm()
 
     def _advance(self) -> str:
-        if self._step > 2:
-            return ""  # already past the last step
-
+        """Move between the real steps (0 -> 1 -> 2); never submits."""
         if self._step == 0:
             name = self.query_one("#wizard-name", Input).value.strip()
             error = validate_avd_name(name, self._existing)
@@ -281,9 +308,6 @@ class CreateAvdModal(ModalScreen[CreateResult | None]):
             self._show_step(2)
             return ""
 
-        self._sdcard = self.query_one("#wizard-sdcard", Input).value.strip()
-        # Step past the end so action_next_or_down() knows to submit.
-        self._step = 3
         return ""
 
     def action_confirm(self) -> None:

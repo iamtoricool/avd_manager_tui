@@ -95,6 +95,7 @@ class SdkService:
             mutation=True,
             answer_text="y",
             on_line=on_line,
+            use_pty=True,
         )
 
     async def remove(self, packages: list[str], on_line=None) -> Job:
@@ -105,6 +106,7 @@ class SdkService:
             mutation=True,
             answer_text="y",
             on_line=on_line,
+            use_pty=True,
         )
 
     async def update_all(self, on_line=None) -> Job:
@@ -114,6 +116,7 @@ class SdkService:
             mutation=True,
             answer_text="y",
             on_line=on_line,
+            use_pty=True,
         )
 
     async def accept_licenses(self, on_line=None) -> Job:
@@ -124,6 +127,7 @@ class SdkService:
             # sdkmanager asks "Accept? (y/N):" once per pending license.
             answer_text="y",
             on_line=on_line,
+            use_pty=True,
         )
 
     # -- helpers ---------------------------------------------------------- #
